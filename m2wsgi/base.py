@@ -199,7 +199,15 @@ class Connection(object):
 
     def close(self):
         """Close the connection."""
+        self.close_send()
+        self.close_recv()
+
+    def close_send(self):
+        """Close the send-side of the connection."""
         self.reqs.close()
+
+    def close_recv(self):
+        """Close the recv-side of the connection."""
         self.resps.close()
 
 
@@ -363,17 +371,30 @@ class WSGIHandler(object):
             self.running = False
             raise
         finally:
-            self.connection.close()
+            self._shutdown()
+
+    def _shutdown(self):
+        #  We have to handle anything in our recv queue,
+        #  or they will get lost when we close the socket.
+        reqs = deque()
+        req = self.connection.recv(blocking=False)
+        while req is not None:
+            reqs.append(req)
+        self.connection.close_send()
+        for req in reqs:
+            self.serve_one_request(req)
+        self.connection.close()
 
     def stop(self):
         """Stop the request-handling loop and close down the connection."""
         self.serving = False
         self.started = False
-        self.connection.close()
+        # TODO: how to interrupt blocking recv?
     
-    def serve_one_request(self):
+    def serve_one_request(self,req=None):
         """Receive and serve a single request from Mongrel2."""
-        req = self.connection.recv()
+        if req is None:
+            req = self.connection.recv()
         #  Mongrel2 uses JSON requests internally.
         #  We don't want them in our WSGI.
         if req.headers.get("METHOD","") == "JSON":
