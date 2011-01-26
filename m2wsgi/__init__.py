@@ -107,6 +107,12 @@ import sys
 import optparse
 import threading
 from textwrap import dedent
+try:
+    import signal
+except ImportError:
+    signal = None
+
+from m2wsgi.util import load_dotted_name
 
 
 def main(argv=None):
@@ -138,6 +144,9 @@ def main(argv=None):
         raise ValueError("not a m2wsgi IO module: %r" % (opts.io,))
     if hasattr(iomod,"monkey_patch"):
         iomod.monkey_patch()
+    #  Try hard to clean up properly when killed
+    if signal is not None:
+        signal.signal(signal.SIGTERM,lambda *a: sys.exit(1))
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
     handlers = []
@@ -159,20 +168,5 @@ def main(argv=None):
             h.stop()
         for t in threads:
             t.join()
-
-
-def load_dotted_name(name):
-    """Load an object, giving its full dotted name.
-
-    Currently this isn't very smart, e.g. it can't load attributes off an
-    object.  I'll improve it as I need it.
-    """
-    try:
-        (modnm,objnm) = name.rsplit(".",1)
-    except ValueError:
-        return __import__(name,fromlist=["*"])
-    else:
-        mod = __import__(modnm,fromlist=["*"])
-        return getattr(mod,objnm)
 
 

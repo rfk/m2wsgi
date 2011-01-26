@@ -19,24 +19,13 @@ from cStringIO import StringIO
 
 import zmq
 
+from m2wsgi.util import pop_netstring, unquote_path, unquote
+
 
 def monkey_patch():
     """Hook to monkey-patch the interpreter for this IO module."""
     pass
 
-
-def pop_netstring(data):
-    """Pop a netstring from the front of the given data.
-
-    This function pops a netstring-formatted chunk of data from the front
-    of the given string.  It returns a two-tuple giving the contents of the
-    netstring and any remaining data.
-    """
-    (size,body) = data.split(':', 1)
-    size = int(size)
-    if body[size] != ",":
-        raise ValueError("not a netstring: %r" % (data,))
-    return (body[:size],body[size+1:])
 
 
 class Request(object):
@@ -360,6 +349,7 @@ class WSGIHandler(object):
                     chunks.close()
         except Exception:
             traceback.print_exc()
+            sys.stderr.write(str(environ) + "\n\n")
             #  Send an error response if we can.
             #  Always close the connection on error.
             if not responder.has_started:
@@ -371,7 +361,10 @@ class WSGIHandler(object):
             #  Make sure that the upload file is cleaned up.
             #  Mongrel doesn't reap these files itself, because the handler
             #  might e.g. move them somewhere.  We just read from them.
-            environ["wsgi.input"].close()
+            try:
+                environ["wsgi.input"].close()
+            except KeyError:
+                pass
             upload_file = req.headers.get("x-mongrel2-upload-start",None)
             if upload_file:
                 upload_file2 = req.headers.get("x-mongrel2-upload-done",None)
