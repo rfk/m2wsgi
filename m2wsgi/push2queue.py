@@ -4,28 +4,30 @@ m2wsgi.push2queue:  turn a PUSH socket into a REQ queue socket
 --------------------------------------------------------------
 
 
-This is a helper program to translate Mongrel2's standard PUSH-based request
-sending socket into a REQ-based socket.  It is an experimental protocol to
-allow handler processes to cleanly disconnect themselves.
+This is a helper program implementing an experimental alternate protocol for
+handlers to get requests out of Mongrel2.  It translates Mongrel2's standard
+PUSH-based request sending socket into a REQ-based socket where the handlers
+are more in control.
 
 In the standard PUSH-based protocol, each handler process connects with a PULL
-socket and requests are send round-robin to all connected handlers.  This is
+socket and requests are sent round-robin to all connected handlers.  This is
 great for throughput but offers no way for a handler to cleanly disconnect -
 if it goes offline with pending requests queued to it, those requests will 
 be dropped.
 
 In the REQ-based protocol offered by this helper, each socket instead connects
-with a REQ socket.  When it's ready for more work, it sends a request and the
-helper replies with a sequence of pending requests.  This allows the handler
-to cleanly shut itself down - it simply stops asking for new requests.
+to Mongrel2 with a REQ socket.  When it's ready for more work, the handler
+sends a request and Mongrel2 (via this helper script) replies with a sequence
+of pending requests for it to process.  This allows the handler to cleanly 
+shut itself down - it simply stops asking for new requests.
 
 Another benefit of this approach is that quick requests do not get assigned
 to a handler that is busy with a slow request, which should help overall
-throughput if the handler has limited internal concurrency.
+throughput if each handler has limited internal concurrency.
 
 Conceptually, the protocol is quite similar to a standard queue of pending
 requests as you might find in e.g. the CherryPy webserver.  It was inspired
-by the analysis of disconnect behaviour and proposed solution by Samuel Tardieu:
+by this post on disconnect behaviour Samuel Tardieu:
 
     http://www.rfc1149.net/blog/2010/12/08/responsible-workers-with-0mq/
 
@@ -37,13 +39,17 @@ to compare this to the PUSH-based protocol).
 """
 
 import sys
-import zmq
+import optparse
+from textwrap import dedent
 from collections import deque
+
+import zmq
 
 from m2wsgi.util import encode_netstrings
 
 
-def push2queue(in_spec,out_spec,in_ident=None,out_ident=None):
+def push2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
+    """Run the push2queue helper program."""
     CTX = zmq.Context()
     in_sock = CTX.socket(zmq.PULL)
     if in_ident is not None:
@@ -58,8 +64,10 @@ def push2queue(in_spec,out_spec,in_ident=None,out_ident=None):
     workers = deque()
     def recv_worker(flags=0):
         worker = out_sock.recv(flags)
-        #  throw away XREP framing chunks
-        out_sock.recv(flags); out_sock.recv(flags)
+        #  throw away XREP framing chunk
+        out_sock.recv(flags)
+        #  throw away the request msg, it's irrelevant
+        out_sock.recv(flags)
         return worker
     def send_requests(worker,reqs,flags=0):
         out_sock.send(worker,zmq.SNDMORE | flags)
@@ -69,7 +77,8 @@ def push2queue(in_spec,out_spec,in_ident=None,out_ident=None):
     while True:
         #  Wait for an incoming request, then batch it together
         #  with any others that have arrived at the same time.
-        reqs.append(in_sock.recv())
+        if not reqs:
+            reqs.append(in_sock.recv())
         try:
             while True:
                 reqs.append(in_sock.recv(zmq.NOBLOCK))
@@ -77,9 +86,7 @@ def push2queue(in_spec,out_spec,in_ident=None,out_ident=None):
             if e.errno != zmq.EAGAIN:
                 raise
         #  Wait for a ready worker, then gather any others
-        #  that are also ready.  We may have ready workers left
-        #  over from a previous iteration, in which case we
-        #  don't block at all.
+        #  that are also ready for work.
         if not workers:
             workers.append(recv_worker())
         try:
@@ -95,18 +102,32 @@ def push2queue(in_spec,out_spec,in_ident=None,out_ident=None):
             numreqs = reqs_per_worker
             if remainder > worker_num:
                 numreqs += 1
+            if numreqs > max_batch_size:
+                numreqs = max_batch_size
             for _ in xrange(numreqs):
                 if not reqs:
                     break
                 yield reqs.popleft()
-        #  Note that this loop will always empty reqs before or equal to
-        #  when it empties workers, due to calculation of reqs_per_worker.
-        while reqs:
+        while reqs and workers:
             send_requests(workers.popleft(),popreqs())
             worker_num += 1
-        #  We have have leftover ready workers here.  That's OK, they'll be
-        #  given work on the next iteration.
+        #  We may have have leftover ready workers and/or ready requests here.
+        #  That's OK, they'll be dealth with on the next iteration.
 
 
 if __name__ == "__main__":
-    push2queue("tcp://127.0.0.1:9999","tcp://127.0.0.1:9989","XXX","YYY")
+    op = optparse.OptionParser(usage=dedent("""
+    usage:  m2wsgi.push2queue [options] in_spec out_spec
+    """))
+    op.add_option("","--in-ident",type="str",default=None,
+                  help="the in-socket identity to use")
+    op.add_option("","--out-ident",type="str",default=None,
+                  help="the out-socket identity to use")
+    op.add_option("","--max-batch-size",type="int",default=10,
+                  help="max requests to send out in single batch")
+    (opts,args) = op.parse_args()
+    if len(args) != 2:
+        raise ValueError("push2queue expects exactly two arguments")
+    push2queue(*args,in_ident=opts.in_ident,out_ident=opts.out_ident,
+                     max_batch_size=opts.max_batch_size)
+
