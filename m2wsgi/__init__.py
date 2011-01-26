@@ -121,12 +121,20 @@ from m2wsgi.util import load_dotted_name
 def main(argv=None):
     """Entry-point for command-line use of m2wsgi."""
     op = optparse.OptionParser(usage=dedent("""
-    usage:  m2wsgi [options] dotted.app.name spend_spec [recv_spec [send_ident [recv_ident]]]
+    usage:  m2wsgi [options] dotted.app.name spend_spec [recv_spec]
     """))
     op.add_option("","--io",default="base",
                   help="the I/O module to use")
     op.add_option("","--num-threads",type="int",default=1,
                   help="the number of threads to use")
+    op.add_option("","--send-ident",type="str",default=None,
+                  help="the send socket identity to use")
+    op.add_option("","--recv-ident",type="str",default=None,
+                  help="the recv socket identity to use")
+    op.add_option("","--send-type",type="str",default=None,
+                  help="the send socket type to use")
+    op.add_option("","--recv-type",type="str",default=None,
+                  help="the recv socket type to use")
     (opts,args) = op.parse_args(argv)
     #  Sanity-check the arguments.
     if len(args) < 1:
@@ -139,6 +147,10 @@ def main(argv=None):
     app = load_dotted_name(args[0])
     assert callable(app), "the specified app is not callable"
     conn_args = args[1:]
+    conn_kwds = dict(send_ident=opts.send_ident,
+                     recv_ident=opts.recv_ident,
+                     send_type=opts.send_type,
+                     recv_type=opts.recv_type)
     try:
         iomod = "%s.%s" % (__name__,opts.io,)
         iomod = __import__(iomod,fromlist=["WSGIHandler"])
@@ -155,7 +167,7 @@ def main(argv=None):
     handlers = []
     threads = []
     def run_handler():
-        conn = iomod.WSGIHandler.ConnectionClass(*conn_args)
+        conn = iomod.WSGIHandler.ConnectionClass(*conn_args,**conn_kwds)
         handler = iomod.WSGIHandler(app,conn)
         handlers.append(handler)
         handler.serve()

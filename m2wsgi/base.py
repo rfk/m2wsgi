@@ -15,6 +15,7 @@ import json
 import time
 import traceback
 import threading
+from collections import deque
 from cStringIO import StringIO
 
 import zmq
@@ -72,7 +73,7 @@ class Connection(object):
     """Mongrel2 connection object.
 
     Instances of Connection represent a Handler connection to the main
-    mongrel2 server.  They are used to receive requests and send responses.
+    Mongrel2 server.  They are used to receive requests and send responses.
 
     When creating a connection, you must specify at least the 'send_spec'
     argument.  This gives the ZMQ socket address on which to receive requests
@@ -83,21 +84,40 @@ class Connection(object):
     host a send_spec and one port lower (which seems to be the convention for
     mongrel2 config).
 
-    If specified, the 'send_ident' argument is used as the socket identity
-    corresponding to 'send_spec'.  It should be a UUID string.  If not
-    specified, the socket is run without identity and thus in non-durable mode.
+    If specified, the 'send_ident' and 'recv_ident' arguments give the socket
+    identities for the send and recv sockts.  They should be UUID strings.
+    If only send_ident is specified, recv_ident will default to it.  If neither
+    are specified, the sockets will run without identity in non-durable mode.
 
-    If specified, the 'recv_ident' argument is used as the socket identity
-    corresponding to 'recv_spec'.  It should be a UUID string.  If not
-    specified, the socket is run without identity and thus in non-durable mode.
-    If not given, the default is to re-use 'send_ident'.
+    If specified, the 'send_type' and 'recv_type' arguments give the type
+    of socket to use.  The defaults are zmq.PUSH and zmq.PUB respectively.
+    Currently supported send socket types are:
+
+        * zmq.PUSH:  The standard push socket offered by Mongrel2.  This
+                     is very efficient but offers no way to detect handlers
+                     that have disconnected.
+
+        * zmq.REQ:   A request-response socket.  The handler explicitly asks
+                     for new requests.  This is a little slower but allows
+                     clients to cleanly disconnect (they just stop asking for
+                     requests).  For now, you must run the "push2req" script
+                     included in this module to translate mongrel2's PUSH
+                     socket into an XREP socket to connect in this mode.
+
+    Currently supported recv socket types are:
+
+        * zmq.PUB:  The standard publisher socket offered by Mongrel2.
+                    Response data is published, prefixed with the identity
+                    of the mongrel2 instance managing the request.
+
     """
 
     ZMQ_CTX = zmq.Context()
 
     RequestClass = Request
 
-    def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None):
+    def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None,
+                      send_type=None,recv_type=None):
         self.send_spec = send_spec
         if recv_spec is None:
             try:
@@ -107,28 +127,78 @@ class Connection(object):
                 msg = "cannot guess recv_spec from send_spec %r" % (send_spec,)
                 raise ValueError(msg)
             recv_spec = send_host + ":" + str(send_port - 1)
+        if send_type is None:
+            send_type = zmq.PUSH
+        elif isinstance(send_type,basestring):
+            send_type = getattr(zmq,send_type)
+        if recv_type is None:
+            recv_type = zmq.PUB
+        elif isinstance(recv_type,basestring):
+            recv_type = getattr(zmq,recv_type)
         self.recv_spec = recv_spec
         self.send_ident = send_ident
         self.recv_ident = recv_ident or send_ident
-        self.reqs = self.ZMQ_CTX.socket(zmq.PULL)
+        self.send_type = send_type
+        self.recv_type = recv_type
+        self.recv_buffer = deque()
+        self.reqs = self.ZMQ_CTX.socket(send_type)
         if self.send_ident is not None:
             self.reqs.setsockopt(zmq.IDENTITY,self.send_ident)
         self.reqs.connect(self.send_spec)
-        self.resps = self.ZMQ_CTX.socket(zmq.PUB)
+        self.resps = self.ZMQ_CTX.socket(recv_type)
         if self.recv_ident is not None:
             self.resps.setsockopt(zmq.IDENTITY,self.recv_ident)
         self.resps.connect(self.recv_spec)
 
-    def recv(self):
-        msg = self.reqs.recv()
+    def recv(self,blocking=True):
+        """Receive a request from the send socket.
+
+        This method receives a request from the send socket, parses it into
+        a Request object and returns it.
+ 
+        You may specify the keyword argument 'blocking' to request blocking
+        (the default) or non-blocking recv.  If not blocking and no request
+        is available, None is returned.
+        """
+        #  For a PUSH socket, we just recv the message straight out of it.
+        if self.send_type == zmq.PUSH:
+            if blocking:
+                msg = self.reqs.recv()
+            else:
+                try:
+                    msg = self.reqs.recv(zmq.NOBLOCK)
+                except zmq.ZMQError, e:
+                    if e.errno != zmq.EAGAIN:
+                        raise
+                    return None
+        #  For a REQ socket, we send an empty request message to it,
+        #  and get back a sequence of requests.  We return the first and
+        #  put the remainder into the recv_buffer.
+        elif self.send_type == zmq.REQ:
+            if not self.recv_buffer:
+                if not blocking:
+                    return None
+                self.reqs.send("")
+                msgs = self.reqs.recv()
+                while msgs:
+                    (msg,msgs) = pop_netstring(msgs)
+                    self.recv_buffer.append(msg)
+            msg = self.recv_buffer.popleft()
+        else:
+            raise ValueError("unknown send_type: %s" % (self.send_type,))
         return self.RequestClass.parse(self,msg)
 
     def send(self,target,cid,data):
+        """Send a response to the specified target mongrel2 instance."""
         cid = str(cid)
         msg = "%s %d:%s, %s" % (target,len(cid),cid,data)
-        self.resps.send(msg)
+        if self.recv_type == zmq.PUB:
+            self.resps.send(msg)
+        else:
+            raise ValueError("unknown recv_type: %s" % (self.recv_type,))
 
     def close(self):
+        """Close the connection."""
         self.reqs.close()
         self.resps.close()
 

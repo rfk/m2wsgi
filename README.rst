@@ -28,6 +28,9 @@ like so::
 
     python -m m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
 
+I'm interested in adding support for other IO modules such as gevent;
+contributions welcome.
+
 
 Programmatic Usage
 ------------------
@@ -76,9 +79,8 @@ as many threads as you need, have them all connect to the same handler socket,
 and mongrel2 (via zmq) will automatically load-balance the requests to them.
 
 Similarly, there's no explicit support for reloading when the code changes.
-Just start up a new instance of the handler, then kill the old one.  Zmq will
-ensure that the handover happens gracefully.
-
+Just kill the old handler and start up a new one.  If you're using fixed
+handler UUIDs then zmq will ensure that the handover happens gracefully.
 
 
 Current bugs, limitations and things to do
@@ -93,4 +95,5 @@ It's not all perfect just yet, although it does seem to mostly work:
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
       available.  I'm working on a zmq adapter that can do something better.
+
 
