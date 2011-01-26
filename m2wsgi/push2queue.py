@@ -1,15 +1,15 @@
 """
 
-m2wsgi.push2queue:  turn a PUSH socket into a REQ queue socket
+m2wsgi.pull2queue:  turn a PULL socket into a REQ queue socket
 --------------------------------------------------------------
 
 
 This is a helper program implementing an experimental alternate protocol for
 handlers to get requests out of Mongrel2.  It translates Mongrel2's standard
-PUSH-based request sending socket into a REQ-based socket where the handlers
+PULL-based request sending socket into a REQ-based socket where the handlers
 are more in control.
 
-In the standard PUSH-based protocol, each handler process connects with a PULL
+In the standard PULL-based protocol, each handler process connects with a PULL
 socket and requests are sent round-robin to all connected handlers.  This is
 great for throughput but offers no way for a handler to cleanly disconnect -
 if it goes offline with pending requests queued to it, those requests will 
@@ -34,7 +34,7 @@ by this post on disconnect behaviour Samuel Tardieu:
 I've added the logic to send back more than one pending request in a single
 response, to help increase throughput when there are lots of requests coming
 in regularly (at least, that's the theory - I need to run some performance 
-to compare this to the PUSH-based protocol).
+to compare this to the PULL-based protocol).
 
 """
 

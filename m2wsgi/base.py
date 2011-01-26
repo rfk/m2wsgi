@@ -90,10 +90,10 @@ class Connection(object):
     are specified, the sockets will run without identity in non-durable mode.
 
     If specified, the 'send_type' and 'recv_type' arguments give the type
-    of socket to use.  The defaults are zmq.PUSH and zmq.PUB respectively.
+    of socket to use.  The defaults are zmq.PULL and zmq.PUB respectively.
     Currently supported send socket types are:
 
-        * zmq.PUSH:  The standard push socket offered by Mongrel2.  This
+        * zmq.PULL:  The standard push socket offered by Mongrel2.  This
                      is very efficient but offers no way to detect handlers
                      that have disconnected.
 
@@ -101,7 +101,7 @@ class Connection(object):
                      for new requests.  This is a little slower but allows
                      clients to cleanly disconnect (they just stop asking for
                      requests).  For now, you must run the "push2queue" script
-                     included in this module to translate mongrel2's PUSH
+                     included in this module to translate mongrel2's PULL
                      socket into an XREP socket to connect in this mode.
 
     Currently supported recv socket types are:
@@ -128,7 +128,7 @@ class Connection(object):
                 raise ValueError(msg)
             recv_spec = send_host + ":" + str(send_port - 1)
         if send_type is None:
-            send_type = zmq.PUSH
+            send_type = zmq.PULL
         elif isinstance(send_type,basestring):
             send_type = getattr(zmq,send_type)
         if recv_type is None:
@@ -141,11 +141,11 @@ class Connection(object):
         self.send_type = send_type
         self.recv_type = recv_type
         self.recv_buffer = deque()
-        self.reqs = self.ZMQ_CTX.socket(send_type)
+        self.reqs = self.ZMQ_CTX.socket(self.send_type)
         if self.send_ident is not None:
             self.reqs.setsockopt(zmq.IDENTITY,self.send_ident)
         self.reqs.connect(self.send_spec)
-        self.resps = self.ZMQ_CTX.socket(recv_type)
+        self.resps = self.ZMQ_CTX.socket(self.recv_type)
         if self.recv_ident is not None:
             self.resps.setsockopt(zmq.IDENTITY,self.recv_ident)
         self.resps.connect(self.recv_spec)
@@ -160,8 +160,8 @@ class Connection(object):
         (the default) or non-blocking recv.  If not blocking and no request
         is available, None is returned.
         """
-        #  For a PUSH socket, we just recv the message straight out of it.
-        if self.send_type == zmq.PUSH:
+        #  For a PULL socket, we just recv the message straight out of it.
+        if self.send_type == zmq.PULL:
             if blocking:
                 msg = self.reqs.recv()
             else:
@@ -369,20 +369,27 @@ class WSGIHandler(object):
                 self.serve_one_request()
         except Exception:
             self.running = False
-            raise
-        finally:
+            e1,e2,e3 = sys.exc_info()
+            try:
+                self._shutdown()
+            except Exception:
+                traceback.print_exc()
+            raise e1,e2,e3
+        else:
             self._shutdown()
 
     def _shutdown(self):
-        #  We have to handle anything in our recv queue,
-        #  or they will get lost when we close the socket.
+        #  We have to handle anything that's already in our recv queue,
+        #  or the requests will get lost when we close the socket.
         reqs = deque()
         req = self.connection.recv(blocking=False)
         while req is not None:
             reqs.append(req)
         self.connection.close_send()
         for req in reqs:
-            self.serve_one_request(req)
+            self.handle_request(req)
+        # TODO: handle_request might spawn a new thread, need to wait for
+        # them to compelete.
         self.connection.close()
 
     def stop(self):
@@ -391,14 +398,9 @@ class WSGIHandler(object):
         self.started = False
         # TODO: how to interrupt blocking recv?
     
-    def serve_one_request(self,req=None):
+    def serve_one_request(self):
         """Receive and serve a single request from Mongrel2."""
-        if req is None:
-            req = self.connection.recv()
-        #  Mongrel2 uses JSON requests internally.
-        #  We don't want them in our WSGI.
-        if req.headers.get("METHOD","") == "JSON":
-            return
+        req = self.connection.recv()
         self.handle_request(req)
         
     def handle_request(self,req):
@@ -408,16 +410,15 @@ class WSGIHandler(object):
         the mongrel2 request into a WSGI environ, invokes the application and
         sends the resulting response back to Mongrel2.
 
-        Subclasses way override this method to control how and when the request
+        Subclasses may override this method to control how and when the request
         is handled, e.g. by spawning a new thread or adding it to a work queue.
         It's a good idea to return control to the calling code as quickly as
         or you'll get a nice backlog of outstanding requests.
         """
-        #  If there's an async upload in progress, wait until
-        #  it completes.  Eventually we'll read this on demand.
-        if "x-mongrel2-upload-start" in req.headers:
-            if "x-mongrel2-upload-done" not in req.headers:
-                return
+        #  Mongrel2 uses JSON requests internally.
+        #  We don't want them in our WSGI.
+        if req.headers.get("METHOD","") == "JSON":
+            return
         #  OK, it's a legitimate full HTTP request.
         #  Route it through the WSGI app.
         environ = {}
