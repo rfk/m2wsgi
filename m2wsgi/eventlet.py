@@ -38,6 +38,7 @@ class WSGIHandler(base.WSGIHandler):
     """
 
     ConnectionClass = Connection
+    StreamingUploadClass = StreamingUploadFile
 
     def handle_request(self,req):
         eventlet.spawn_n(super(WSGIHandler,self).handle_request,req)
