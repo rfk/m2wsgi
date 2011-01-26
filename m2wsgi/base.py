@@ -63,9 +63,11 @@ class Request(object):
         various data fields out of the raw Mongrel2 message.
         """
         (sender,cid,path,rest) = msg.split(' ', 3)
-        (headers,rest) = pop_netstring(rest)
+        (headers_str,rest) = pop_netstring(rest)
         (body,_) = pop_netstring(rest)
-        headers = json.loads(headers)
+        headers = {}
+        for (k,v) in json.loads(headers_str).iteritems():
+            headers[k.encode("ascii")] = v.encode("ascii")
         return cls(connection,sender,cid,path,headers,body)
 
     def respond(self,data):
@@ -386,9 +388,11 @@ class WSGIHandler(object):
         #  Include keys required by the spec
         environ["REQUEST_METHOD"] = req.headers["METHOD"]
         environ["SCRIPT_NAME"] = req.headers["PATTERN"]
-        environ["PATH_INFO"] = req.headers["PATH"]
+        while environ["SCRIPT_NAME"].endswith("/"):
+            environ["SCRIPT_NAME"] = environ["SCRIPT_NAME"][:-1]
+        environ["PATH_INFO"] = unquote_path(req.headers["PATH"])
         if "QUERY" in req.headers:
-            environ["QUERY_STRING"] = req.headers["QUERY"]
+            environ["QUERY_STRING"] = unquote(req.headers["QUERY"])
         environ["SERVER_PROTOCOL"] = req.headers["VERSION"]
         #  TODO: mongrel2 doesn't seem to send me this info.
         #  How can I obtain it?  Suck it out of the config?
