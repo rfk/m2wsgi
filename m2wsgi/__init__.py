@@ -18,8 +18,8 @@ The simplest way to use this package is as a command-line launcher::
 
 This will connect to Mongrel2 on the specified request port and start handling
 requests by passing them through the specified WSGI app.  By default you will
-get a single worker thread handling all requests; increase the number of
-threads like so::
+get a single worker thread handling all requests, which is probably not what
+you want; increase the number of threads like so::
 
     python -m m2wsgi --num-threads=5 dotted.app.name tcp://127.0.0.1:9999
 
@@ -57,7 +57,7 @@ create your own Connection object::
 Don't we already have one of these?
 -----------------------------------
 
-Several actually:
+Yes, there are several existing WSGI gateways for Mongrel2:
 
     * https://github.com/berry/Mongrel2-WSGI-Handler
     * https://bitbucket.org/dholth/mongrel2_wsgi
@@ -90,11 +90,17 @@ It's not all perfect just yet, although it does seem to mostly work:
 
     * When running multiple threads, ctrl-C doesn't cleanly exit the process.
       Seems like the background threads get stuck in a blocking recv().
+      I *really* don't want to emulate interrupts using zmq_poll...
 
     * The zmq load-balancing algorithm is greedy round-robin, which isn't
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
-      available.  I'm working on a zmq adapter that can do something better.
+      available.  I'm working on a zmq adapter that can do something better
+      (see the push2queue script in this distribution).
+
+    * It would be great to grab connection details straight from the
+      mongrel2 config database.  Perhaps a Connection.from_config method
+      with keywords to select the connection by handler id, host, route etc.
 
 
 """
@@ -114,6 +120,7 @@ try:
     import signal
 except ImportError:
     signal = None
+
 
 from m2wsgi.util import load_dotted_name
 
@@ -141,6 +148,8 @@ def main(argv=None):
         raise ValueError("you must specify the WSGI application")
     if len(args) < 2:
         raise ValueError("you must specify the mongrel2 request socket")
+    if len(args) > 3:
+        raise ValueError("too many arguments")
     if opts.num_threads <= 0:
         raise ValueError("--num-threads must be positive")
     #  Grab the application, connection and handler class
