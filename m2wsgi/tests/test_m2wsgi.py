@@ -16,7 +16,7 @@ class TestMisc(unittest.TestCase):
         updates it with the contents of m2wsgi.__doc__.
         """
         dirname = os.path.dirname
-        readme = os.path.join(dirname(dirname(dirname(__file__))),"README.txt")
+        readme = os.path.join(dirname(dirname(dirname(__file__))),"README.rst")
         if not os.path.isfile(readme):
             f = open(readme,"wb")
             f.write(m2wsgi.__doc__.encode())
