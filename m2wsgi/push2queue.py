@@ -17,12 +17,15 @@ be dropped.
 In the REQ-based protocol offered by this helper, each socket instead connects
 with a REQ socket.  When it's ready for more work, it sends a request and the
 helper replies with a sequence of pending requests.  This allows the handler
-to cleanly shut itself down - it simple stops asking for new requests.
-Conceptually, it's quite similar to a standard queue of pending requests as
-you might find in e.g. the CherryPy webserver.
+to cleanly shut itself down - it simply stops asking for new requests.
 
-This was inspired by the analysis of disconnect behaviour and proposed solution
-by Samuel Tardieu:
+Another benefit of this approach is that quick requests do not get assigned
+to a handler that is busy with a slow request, which should help overall
+throughput if the handler has limited internal concurrency.
+
+Conceptually, the protocol is quite similar to a standard queue of pending
+requests as you might find in e.g. the CherryPy webserver.  It was inspired
+by the analysis of disconnect behaviour and proposed solution by Samuel Tardieu:
 
     http://www.rfc1149.net/blog/2010/12/08/responsible-workers-with-0mq/
 
