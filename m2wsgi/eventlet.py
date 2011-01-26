@@ -6,16 +6,29 @@ from m2wsgi import base
 import eventlet.hubs
 from eventlet.green import zmq, time
 from eventlet.hubs import use_hub
+from eventlet import tpool
 eventlet.hubs.use_hub("zeromq")
-
-
-class Connection(base.Connection):
-    ZMQ_CTX = zmq.Context()
 
 
 def monkey_patch():
     """Hook to monkey-patch the interpreter for this IO module."""
     eventlet.monkey_patch()
+
+
+class Connection(base.Connection):
+    #  Use green version of zmq module.
+    ZMQ_CTX = zmq.Context()
+
+
+class StreamingUploadFile(base.StreamingUploadFile):
+    #  Use green version of time module.
+    #  Send os.fstat calls into a threadpool.
+    def _wait_for_data(self):
+        curpos = self.fileobj.tell()
+        cursize = tpool.execute(os.fstat,self.fileobj.fileno()).st_size
+        while curpos >= cursize:
+            time.sleep(0.01)
+            cursize = tpool.execute(os.fstat,self.fileobj.fileno()).st_size
 
 
 class WSGIHandler(base.WSGIHandler):

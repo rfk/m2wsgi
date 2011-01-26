@@ -12,15 +12,15 @@ classes from in here.
 import os
 import sys
 import json
+import thread
 import time
 import traceback
-import threading
 from collections import deque
 from cStringIO import StringIO
 
 import zmq
 
-from m2wsgi.util import pop_netstring, unquote_path, unquote
+from m2wsgi.util import pop_netstring, unquote_path, unquote, InputStream
 
 
 def monkey_patch():
@@ -322,6 +322,59 @@ class WSGIResponder(object):
 
 
 
+class StreamingUploadFile(InputStream):
+    """File-like object for streaming reads from in-progress uploads."""
+
+    def __init__(self,request,fileobj):
+        self.request = request
+        self.fileobj = fileobj
+        cl = request.headers.get("content-length","")
+        if not cl:
+            raise ValueError("missing content-length for streaming upload")
+        try:
+            cl = int(cl)
+        except ValueError:
+            msg = "malformed content-length for streaming upload: %r"
+            raise ValueError(msg % (cl,))
+        self.content_length = cl
+        super(StreamingUploadFile,self).__init__()
+
+    def close(self):
+        super(StreamingUploadFile,self).close()
+        self.fileobj.close()
+
+    def _read(self,sizehint=-1):
+        if self.fileobj.tell() >= self.content_length:
+            return None
+        if sizehint == 0:
+            data = ""
+        else:
+            if sizehint > 0:
+                data = self.fileobj.read(sizehint)
+                while not data:
+                    self._wait_for_data()
+                    data = self.fileobj.read(sizehint)
+            else:
+                data = self.fileobj.read()
+                while not data:
+                    self._wait_for_data()
+                    data = self.fileobj.read()
+        return data
+
+    def _wait_for_data(self):
+        """Wait for more data to be available from this upload.
+
+        The base implementation simply does a sleep loop until the
+        file grows past its current position.  Eventually we could try
+        using file notifications to detect change.
+        """
+        curpos = self.fileobj.tell()
+        cursize = os.fstat(self.fileobj.fileno()).st_size
+        while curpos >= cursize:
+            time.sleep(0.01)
+            cursize = os.fstat(self.fileobj.fileno()).st_size
+
+
 class WSGIHandler(object):
     """Mongrel2 Handler translating to WSGI.
 
@@ -345,6 +398,7 @@ class WSGIHandler(object):
 
     ConnectionClass = Connection
     ResponderClass = WSGIResponder
+    StreamingUploadClass = StreamingUploadFile
 
     def __init__(self,application,connection):
         self.started = False
@@ -401,6 +455,7 @@ class WSGIHandler(object):
     def serve_one_request(self):
         """Receive and serve a single request from Mongrel2."""
         req = self.connection.recv()
+        #print req.headers["PATH"], thread.get_ident()
         self.handle_request(req)
         
     def handle_request(self,req):
@@ -424,7 +479,24 @@ class WSGIHandler(object):
         environ = {}
         responder = self.ResponderClass(req)
         try:
-            #  Grab the real environ.
+            #  If there's an async upload in progress, we have two options.
+            #  If they sent a Content-Length header then we can do a streaming
+            #  read from the file as it is being uploaded.  If there's no
+            #  Content-Length then we have to wait for it all to upload (as
+            #  there's no guarantee that the same handler will get both the
+            #  start and end events for any upload).
+            if "x-mongrel2-upload-start" in req.headers:
+                if req.headers.get("content-length",""):
+                    #  We'll streaming read it on the -start event,
+                    #  so ignore the -done event.
+                    if "x-mongrel2-upload-done" in req.headers:
+                        return
+                else:
+                    #  We have to wait for the -done event,
+                    #  so ignore the -start event.
+                    if "x-mongrel2-upload-done" not in req.headers:
+                        return
+            #  Grab the full WSGI environ.
             #  This might error out, e.g. if someone tries any funny business
             #  with the mongrel2 upload headers.
             environ = self.get_wsgi_environ(req,environ)
@@ -472,15 +544,18 @@ class WSGIHandler(object):
             environ = {}
         #  Include keys required by the spec
         environ["REQUEST_METHOD"] = req.headers["METHOD"]
-        environ["SCRIPT_NAME"] = req.headers["PATTERN"]
-        while environ["SCRIPT_NAME"].endswith("/"):
-            environ["SCRIPT_NAME"] = environ["SCRIPT_NAME"][:-1]
-        environ["PATH_INFO"] = unquote_path(req.headers["PATH"])
+        script_name = req.headers.get("PREFIX",req.headers["PATTERN"])
+        while script_name.endswith("/"):
+            script_name = script_name[:-1]
+        environ["SCRIPT_NAME"] = unquote_path(script_name)
+        path_info = req.headers["PATH"][len(script_name):]
+        environ["PATH_INFO"] = unquote_path(path_info)
         if "QUERY" in req.headers:
             environ["QUERY_STRING"] = unquote(req.headers["QUERY"])
         environ["SERVER_PROTOCOL"] = req.headers["VERSION"]
         #  TODO: mongrel2 doesn't seem to send me this info.
         #  How can I obtain it?  Suck it out of the config?
+        #  Let's just hope the client sends a Host header...
         environ["SERVER_NAME"] = "localhost"
         environ["SERVER_PORT"] = "80"
         #  Include standard wsgi keys
@@ -521,18 +596,21 @@ class WSGIHandler(object):
         where an async upload is performed, it is the actual tempfile into
         which the upload was dumped.
 
-        Eventually, I plan to support reading from the async upload tempfile
-        while it is still being written, so that we get "streaming" of uploads
-        directly into the WSGI app.  Obviously, that's not trivial.
+        If the request contains a content-length, then we can read the upload
+        file while it is still comming in.  If not, we wait for it to
+        compelte and then use the raw file object.
         """
         upload_file = req.headers.get("x-mongrel2-upload-start",None)
         if not upload_file:
             return StringIO(req.body)
         upload_file2 = req.headers.get("x-mongrel2-upload-done",None)
-        if upload_file != upload_file2:
-            #  Highly suspicious behaviour; terminate immediately.
-            raise RuntimeError("mismatched mongrel2-upload header")
-        return open(upload_file,"rb")
+        if upload_file2 is None:
+            return self.StreamingUploadClass(req,open(upload_file,"rb"))
+        else:
+            if upload_file != upload_file2:
+                #  Highly suspicious behaviour; terminate immediately.
+                raise RuntimeError("mismatched mongrel2-upload header")
+            return open(upload_file,"rb")
 
 
 if __name__ == "__main__":
