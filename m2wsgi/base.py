@@ -100,7 +100,7 @@ class Connection(object):
         * zmq.REQ:   A request-response socket.  The handler explicitly asks
                      for new requests.  This is a little slower but allows
                      clients to cleanly disconnect (they just stop asking for
-                     requests).  For now, you must run the "push2req" script
+                     requests).  For now, you must run the "push2queue" script
                      included in this module to translate mongrel2's PUSH
                      socket into an XREP socket to connect in this mode.
 
