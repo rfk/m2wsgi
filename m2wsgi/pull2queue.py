@@ -48,8 +48,8 @@ import zmq
 from m2wsgi.util import encode_netstrings
 
 
-def push2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
-    """Run the push2queue helper program."""
+def pull2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
+    """Run the pull2queue helper program."""
     CTX = zmq.Context()
     in_sock = CTX.socket(zmq.PULL)
     if in_ident is not None:
@@ -117,7 +117,7 @@ def push2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
 
 if __name__ == "__main__":
     op = optparse.OptionParser(usage=dedent("""
-    usage:  m2wsgi.push2queue [options] in_spec out_spec
+    usage:  m2wsgi.pull2queue [options] in_spec out_spec
     """))
     op.add_option("","--in-ident",type="str",default=None,
                   help="the in-socket identity to use")
@@ -127,7 +127,7 @@ if __name__ == "__main__":
                   help="max requests to send out in single batch")
     (opts,args) = op.parse_args()
     if len(args) != 2:
-        raise ValueError("push2queue expects exactly two arguments")
-    push2queue(*args,in_ident=opts.in_ident,out_ident=opts.out_ident,
+        raise ValueError("pul2queue expects exactly two arguments")
+    pull2queue(*args,in_ident=opts.in_ident,out_ident=opts.out_ident,
                      max_batch_size=opts.max_batch_size)
 

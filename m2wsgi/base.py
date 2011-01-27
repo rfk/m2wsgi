@@ -100,7 +100,7 @@ class Connection(object):
         * zmq.REQ:   A request-response socket.  The handler explicitly asks
                      for new requests.  This is a little slower but allows
                      clients to cleanly disconnect (they just stop asking for
-                     requests).  For now, you must run the "push2queue" script
+                     requests).  For now, you must run the "pull2queue" script
                      included in this module to translate mongrel2's PULL
                      socket into an XREP socket to connect in this mode.
 
@@ -427,7 +427,9 @@ class WSGIHandler(object):
             try:
                 self._shutdown()
             except Exception:
+                print >>sys.stderr, "------- shutdown error -------"
                 traceback.print_exc()
+                print >>sys.stderr, "------------------------------"
             raise e1,e2,e3
         else:
             self._shutdown()
@@ -455,7 +457,6 @@ class WSGIHandler(object):
     def serve_one_request(self):
         """Receive and serve a single request from Mongrel2."""
         req = self.connection.recv()
-        #print req.headers["PATH"], thread.get_ident()
         self.handle_request(req)
         
     def handle_request(self,req):
@@ -512,8 +513,10 @@ class WSGIHandler(object):
                 if hasattr(chunks,"close"):
                     chunks.close()
         except Exception:
+            print >>sys.stderr, "------- request handling error -------"
             traceback.print_exc()
             sys.stderr.write(str(environ) + "\n\n")
+            print >>sys.stderr, "------------------------------ -------"
             #  Send an error response if we can.
             #  Always close the connection on error.
             if not responder.has_started:

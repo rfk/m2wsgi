@@ -66,7 +66,7 @@ None of them fully met my needs.  In particular, this package has transparent
 support for:
 
     * chunked response encoding
-    * "async upload" of large request bodies
+    * streaming reads of large "async upload" requests
     * pluggable IO backends (e.g. eventlet, gevent)
 
 It's also designed from the ground up specifically for Mongrel2.  This means
@@ -96,7 +96,7 @@ It's not all perfect just yet, although it does seem to mostly work:
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
       available.  I'm working on a zmq adapter that can do something better
-      (see the push2queue script in this distribution).
+      (see the pull2queue script in this distribution).
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
