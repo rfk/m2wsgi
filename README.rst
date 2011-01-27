@@ -34,8 +34,8 @@ you can use eventlet to shuffle the bits around like so::
 
     m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
 
-I'm interested in adding support for other IO modules such as gevent;
-contributions welcome.
+You can also use --io=gevent if that's how you roll.  Contributions for
+other async backends are most welcome.
 
 
 Programmatic Usage
@@ -66,11 +66,11 @@ create your own Connection object::
 If you're creating non-WSGI handlers for Mongrel2 you might find the following
 classes useful:
 
-    * Connection:  represents the connection from your handler to Mongrel2,
-                   through which you can read requests and rend responses.
+    :Connection:  represents the connection from your handler to Mongrel2,
+                  through which you can read requests and rend responses.
 
-    * Request:  represents a client request to which you can asynchronously
-                send response data at any time.
+    :Request:     represents a client request to which you can asynchronously
+                  send response data at any time.
 
 
 Don't we already have one of these?
@@ -118,7 +118,7 @@ It's not all perfect just yet, although it does seem to mostly work:
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
       available.  I'm working on a zmq adapter that can do something better
-      (see the pull2queue script in this distribution).
+      (see the pull2xreq device in this distribution).
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
