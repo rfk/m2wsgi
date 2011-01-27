@@ -67,7 +67,7 @@ If you're creating non-WSGI handlers for Mongrel2 you might find the following
 classes useful:
 
     :Connection:  represents the connection from your handler to Mongrel2,
-                  through which you can read requests and rend responses.
+                  through which you can read requests and send responses.
 
     :Request:     represents a client request to which you can asynchronously
                   send response data at any time.
