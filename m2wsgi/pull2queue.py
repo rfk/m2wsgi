@@ -1,13 +1,36 @@
 """
 
 m2wsgi.pull2queue:  turn a PULL socket into a REQ queue socket
---------------------------------------------------------------
+==============================================================
 
 
 This is a helper program implementing an experimental alternate protocol for
 handlers to get requests out of Mongrel2.  It translates Mongrel2's standard
 PULL-based request sending socket into a REQ-based socket where the handlers
 are more in control.
+
+
+Basic Usage
+-----------
+
+Suppose you have Mongrel2 pushing requets out to tcp://127.0.0.1:9999.  Instead
+of conneting your handlers directory to this socket, run the pull2queue helper
+like so::
+
+    python -m m2wsgi.pull2queue tcp://127.0.0.1:9999 tcp://127.0.0.1:9989
+
+Then you can launch your handlers against the helper socket and have them
+request work instead of it being pushed to them.  Make sure you specify the
+REQ type for the send socket::
+
+    python -m m2wsgi --send-type=REQ \
+                     dotted.app.name \
+                     tcp://127.0.0.1:9989 \
+                     tcp://127.0.0.1:9998
+
+
+OK, but why?
+------------
 
 In the standard PULL-based protocol, each handler process connects with a PULL
 socket and requests are sent round-robin to all connected handlers.  This is
@@ -27,14 +50,14 @@ throughput if each handler has limited internal concurrency.
 
 Conceptually, the protocol is quite similar to a standard queue of pending
 requests as you might find in e.g. the CherryPy webserver.  It was inspired
-by this post on disconnect behaviour Samuel Tardieu:
+by this post on disconnect behaviour by Samuel Tardieu:
 
     http://www.rfc1149.net/blog/2010/12/08/responsible-workers-with-0mq/
 
 I've added the logic to send back more than one pending request in a single
 response, to help increase throughput when there are lots of requests coming
 in regularly (at least, that's the theory - I need to run some performance 
-to compare this to the PULL-based protocol).
+tests to compare this to the PULL-based protocol).
 
 """
 
