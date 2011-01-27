@@ -437,6 +437,9 @@ class WSGIHandler(object):
     def _shutdown(self):
         #  We have to handle anything that's already in our recv queue,
         #  or the requests will get lost when we close the socket.
+        #  TODO:  if we exit by interrupting a blocking send, the queue
+        #         might try to respond to our request with more work.
+        #         We need to send some sort of disconnect or bump message.
         reqs = deque()
         req = self.connection.recv(blocking=False)
         while req is not None:
@@ -445,7 +448,7 @@ class WSGIHandler(object):
         for req in reqs:
             self.handle_request(req)
         # TODO: handle_request might spawn a new thread, need to wait for
-        # them to compelete.
+        #       them to all to compelete.
         self.connection.close()
 
     def stop(self):
@@ -616,11 +619,12 @@ class WSGIHandler(object):
             return open(upload_file,"rb")
 
 
+def test_application(environ,start_response):
+    start_response("200 OK",[("Content-Length","3")])
+    yield "OK\n"
+
 if __name__ == "__main__":
-    def application(environ,start_response):
-        start_response("200 OK",[("Content-Length","11")])
-        yield "hello world"
-    s = WSGIHandler(application,"tcp://127.0.0.1:9999")
+    s = WSGIHandler(test_application,"tcp://127.0.0.1:9999")
     s.serve()
 
 

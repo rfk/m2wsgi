@@ -13,9 +13,9 @@ are more in control.
 Basic Usage
 -----------
 
-Suppose you have Mongrel2 pushing requets out to tcp://127.0.0.1:9999.  Instead
-of conneting your handlers directory to this socket, run the pull2queue helper
-like so::
+Suppose you have Mongrel2 pushing requests out to tcp://127.0.0.1:9999.
+Instead of conneting your handlers directory to this socket, run the
+pull2queue helper like so::
 
     python -m m2wsgi.pull2queue tcp://127.0.0.1:9999 tcp://127.0.0.1:9989
 
@@ -93,9 +93,10 @@ def pull2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
         out_sock.recv(flags)
         return worker
     def send_requests(worker,reqs,flags=0):
+        reqs = encode_netstrings(reqs)
         out_sock.send(worker,zmq.SNDMORE | flags)
         out_sock.send("",zmq.SNDMORE | flags)
-        out_sock.send(encode_netstrings(reqs),flags)
+        out_sock.send(reqs,flags)
 
     while True:
         #  Wait for an incoming request, then batch it together
