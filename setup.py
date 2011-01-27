@@ -51,6 +51,7 @@ CLASSIFIERS = [
 
 
 PACKAGES = ["m2wsgi","m2wsgi.tests",]
+SCRIPTS = ["scripts/m2wsgi",]
 
 setup(name=NAME,
       version=VERSION,
@@ -61,6 +62,7 @@ setup(name=NAME,
       long_description=LONG_DESC,
       keywords=KEYWORDS,
       packages=PACKAGES,
+      scripts=SCRIPTS,
       license=LICENSE,
       classifiers=CLASSIFIERS,
       **setup_kwds
