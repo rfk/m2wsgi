@@ -18,7 +18,7 @@ from __future__ import absolute_import
 from m2wsgi import base
 
 import eventlet.hubs
-from eventlet.green import zmq, time
+from eventlet.green import zmq, time, threading
 from eventlet.hubs import use_hub
 from eventlet import tpool
 eventlet.hubs.use_hub("zeromq")
@@ -54,8 +54,26 @@ class WSGIHandler(base.WSGIHandler):
     ConnectionClass = Connection
     StreamingUploadClass = StreamingUploadFile
 
+    def __init__(self,*args,**kwds):
+        super(WSGIHandler,self).__init__(*args,**kwds)
+        self._num_inflight_requests = 0
+        self._all_requests_complete = threading.Condition()
+
     def handle_request(self,req):
-        eventlet.spawn_n(super(WSGIHandler,self).handle_request,req)
+        @eventlet.spawn_n
+        def do_handle_request():
+            with self._all_requests_complete:
+                self._num_inflight_requests += 1
+            super(WSGIHandler,self).handle_request(req)
+            with self._all_requests_complete:
+                self._num_inflight_requests -= 1
+                if self._num_inflight_requests == 0:
+                    self._all_requests_complete.notifyAll()
+
+    def wait_for_completion(self):
+        with self._all_requests_complete:
+            if self._num_inflight_requests > 0:
+                self._all_requests_complete.wait()
 
 
 if __name__ == "__main__":

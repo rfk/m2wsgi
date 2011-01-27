@@ -12,7 +12,6 @@ classes from in here.
 import os
 import sys
 import json
-import thread
 import time
 import traceback
 from collections import deque
@@ -64,7 +63,7 @@ class Request(object):
         """Send some response data to the issuer of this request."""
         self.connection.send(self.sender,self.cid,data)
 
-    def close_connection(self):
+    def kill(self):
         """Terminate the connection associated with this request."""
         self.connection.send(self.sender,self.cid,"")
  
@@ -97,7 +96,7 @@ class Connection(object):
                      is very efficient but offers no way to detect handlers
                      that have disconnected.
 
-        * zmq.REQ:   A request-response socket.  The handler explicitly asks
+        * zmq.XREQ:  A request-response socket.  The handler explicitly asks
                      for new requests.  This is a little slower but allows
                      clients to cleanly disconnect (they just stop asking for
                      requests).  For now, you must run the "pull2queue" script
@@ -141,6 +140,7 @@ class Connection(object):
         self.send_type = send_type
         self.recv_type = recv_type
         self.recv_buffer = deque()
+        self._has_shutdown = False
         self.reqs = self.ZMQ_CTX.socket(self.send_type)
         if self.send_ident is not None:
             self.reqs.setsockopt(zmq.IDENTITY,self.send_ident)
@@ -160,33 +160,56 @@ class Connection(object):
         (the default) or non-blocking recv.  If not blocking and no request
         is available, None is returned.
         """
-        #  For a PULL socket, we just recv the message straight out of it.
         if self.send_type == zmq.PULL:
-            if blocking:
-                msg = self.reqs.recv()
-            else:
-                try:
-                    msg = self.reqs.recv(zmq.NOBLOCK)
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        raise
-                    return None
-        #  For a REQ socket, we send an empty request message to it,
-        #  and get back a sequence of requests.  We return the first and
-        #  put the remainder into the recv_buffer.
-        elif self.send_type == zmq.REQ:
-            if not self.recv_buffer:
-                if not blocking:
-                    return None
-                self.reqs.send("")
-                msgs = self.reqs.recv()
-                while msgs:
-                    (msg,msgs) = pop_netstring(msgs)
-                    self.recv_buffer.append(msg)
-            msg = self.recv_buffer.popleft()
+            msg = self._recv_PULL(blocking=blocking)
+        elif self.send_type == zmq.XREQ:
+            msg = self._recv_XREQ(blocking=blocking)
         else:
             raise ValueError("unknown send_type: %s" % (self.send_type,))
+        if msg is None:
+            return None
         return self.RequestClass.parse(self,msg)
+
+    def _recv_PULL(self,blocking=True):
+        """Receive a request via a PULL-type send socket.
+
+        This is the mongrel2 default, and the easiest case.  We just
+        pull a request straight off the socket.
+        """
+        if self.recv_buffer:
+            return self.recv_buffer.popleft()
+        if blocking:
+            return self.reqs.recv()
+        else:
+            try:
+                return self.reqs.recv(zmq.NOBLOCK)
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    if not self._has_shutdown or e.errno != zmq.ENOTSUP:
+                        raise
+                return None
+
+    def _recv_XREQ(self,blocking=True):
+        """Receive a request via a XREQ-type send socket.
+ 
+        This is a custom protocol.  We send an empty request message to the
+        socket, and get back a sequence of requests.  We return the first
+        and put the remainder into the recv_buffer.
+        """
+        if not self.recv_buffer:
+            if not blocking:
+                return None
+            self.reqs.send("",zmq.SNDMORE)
+            self.reqs.send("")
+            delim = self.reqs.recv()
+            assert delim == "", "non-empty msg delimiter: "+delim
+            msgs = self.reqs.recv()
+            if not msgs:
+                raise RuntimeError("XREQ socket shut down unexpectedly")
+            while msgs:
+                (msg,msgs) = pop_netstring(msgs)
+                self.recv_buffer.append(msg)
+        return self.recv_buffer.popleft()
 
     def send(self,target,cid,data):
         """Send a response to the specified target mongrel2 instance."""
@@ -197,17 +220,60 @@ class Connection(object):
         else:
             raise ValueError("unknown recv_type: %s" % (self.recv_type,))
 
-    def close(self):
-        """Close the connection."""
-        self.close_send()
-        self.close_recv()
+    def shutdown(self):
+        """Shut down the connection.
 
-    def close_send(self):
-        """Close the send-side of the connection."""
+        This indicates that no more requests should be received by the
+        handler, but it is willing to process any that have already been
+        transmitted.  Use it for graceful termination of handlers.
+
+        After shutdown, you may only call recv() with blocking=False.
+        """
+        if self.send_type == zmq.PULL:
+            self._shutdown_PULL()
+        elif self.send_type == zmq.XREQ:
+            self._shutdown_XREQ()
+        else:
+            raise ValueError("unknown send_type: %s" % (self.send_type,))
+        self._has_shutdown = True
+
+    def _shutdown_PULL(self):
+        """Shutdown a PULL-type send socket.
+
+        Actually such a thing is not possible, zmq has no API for it.
+        What we do is quickly read anything that's pending for delivery
+        then close the socket.  This leaves a slight race condition that
+        a request will be pushed to us and then lost.
+        """
+        req = self._recv_PULL(blocking=False)
+        while req is not None:
+            self.recv_buffer.append(req)
+            req = self._recv_PULL(blocking=False)
         self.reqs.close()
 
-    def close_recv(self):
-        """Close the recv-side of the connection."""
+    def _shutdown_XREQ(self):
+        """Shutdown a XREQ-type send socket.
+
+        This sends a shutdown message to the socket to disconnect any
+        pending request.  We then recv replies until we get one that
+        is empty, signalling that the disconnect has been processed.
+        """
+        self.reqs.send("",zmq.SNDMORE)
+        self.reqs.send("X")
+        delim = self.reqs.recv()
+        assert delim == "", "non-empty msg delimiter: "+delim
+        msgs = self.reqs.recv()
+        while msgs:
+            while msgs:
+                (msg,msgs) = pop_netstring(msgs)
+                self.recv_buffer.append(msg)
+            assert self.reqs.recv() == ""
+            msgs = self.reqs.recv()
+        self.reqs.close()
+
+    def close(self):
+        """Close the connection."""
+        self.reqs.close()
         self.resps.close()
 
 
@@ -283,7 +349,7 @@ class WSGIResponder(object):
         if self.is_chunked:
             self._write("0\r\n\r\n")
         if self.should_close:
-            self.request.close_connection()
+            self.request.kill()
             
     def write_headers(self):
         """Write out the response headers from the stored data.
@@ -418,37 +484,35 @@ class WSGIHandler(object):
         """
         self.serving = True
         self.started = True
+        exc_info,exc_value,exc_tb = None,None,None
         try:
             while self.serving:
                 self.serve_one_request()
         except Exception:
             self.running = False
-            e1,e2,e3 = sys.exc_info()
-            try:
+            exc_info,exc_value,exc_tb = sys.exc_info()
+            raise
+        finally:
+            #  Shut down the connection, but don't hide the original error.
+            if exc_info is None:
                 self._shutdown()
-            except Exception:
-                print >>sys.stderr, "------- shutdown error -------"
-                traceback.print_exc()
-                print >>sys.stderr, "------------------------------"
-            raise e1,e2,e3
-        else:
-            self._shutdown()
+            else:
+                try:
+                    self._shutdown()
+                except Exception:
+                    print >>sys.stderr, "------- shutdown error -------"
+                    traceback.print_exc()
+                    print >>sys.stderr, "------------------------------"
+                raise exc_info,exc_value,exc_tb
 
     def _shutdown(self):
+        self.connection.shutdown()
         #  We have to handle anything that's already in our recv queue,
         #  or the requests will get lost when we close the socket.
-        #  TODO:  if we exit by interrupting a blocking send, the queue
-        #         might try to respond to our request with more work.
-        #         We need to send some sort of disconnect or bump message.
-        reqs = deque()
         req = self.connection.recv(blocking=False)
         while req is not None:
-            reqs.append(req)
-        self.connection.close_send()
-        for req in reqs:
             self.handle_request(req)
-        # TODO: handle_request might spawn a new thread, need to wait for
-        #       them to all to compelete.
+        self.wait_for_completion()
         self.connection.close()
 
     def stop(self):
@@ -461,7 +525,7 @@ class WSGIHandler(object):
         """Receive and serve a single request from Mongrel2."""
         req = self.connection.recv()
         self.handle_request(req)
-        
+
     def handle_request(self,req):
         """Handle the given Request object.
 
@@ -526,7 +590,7 @@ class WSGIHandler(object):
                 responder.start_response("500 Server Error",[],sys.exc_info())
                 responder.write("server error")
                 responder.flush()
-            req.close_connection()
+            req.kill()
         finally:
             #  Make sure that the upload file is cleaned up.
             #  Mongrel doesn't reap these files itself, because the handler
@@ -543,6 +607,19 @@ class WSGIHandler(object):
                         os.unlink(upload_file)
                     except EnvironmentError:
                         pass
+
+    def wait_for_completion(self):
+        """Wait for all in-progress requests to be completed.
+
+        Since the handle_request() method may operate asynchronously
+        (e.g. by spawning a new thread) there must be a way to determine
+        when all in-progress requets have been compeleted.  WSGIHandler
+        subclasses should override this method to provide such behaviour.
+
+        Note that the default implementation does nothing, since requests
+        and handled synchronously in this case.
+        """
+        pass
 
     def get_wsgi_environ(self,req,environ=None):
         """Construct a WSGI environ dict for the given Request object."""
@@ -566,7 +643,7 @@ class WSGIHandler(object):
         environ["SERVER_PORT"] = "80"
         #  Include standard wsgi keys
         environ['wsgi.input'] = self.get_input_file(req)
-        # TODO: 100-continue support
+        # TODO: 100-continue support?
         environ['wsgi.errors'] = sys.stderr
         environ['wsgi.version'] = (1,0)
         environ['wsgi.multithread'] = True

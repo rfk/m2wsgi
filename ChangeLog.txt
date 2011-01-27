@@ -1,4 +1,14 @@
 
+v0.2.1
+
+    * New method Connection.shutdown() to stop receiving more requests,
+      but allow processing of any that are already received.
+    * Changed custom request protocol from REQ to XREQ.  It now sends an
+      explicit shutdown message to the send socket, to abort a request
+      that may already be in the system when shutdown() is called.
+    * WSGIHandler._shutdown() now waits for all in-progress requests to
+      complete before it terminates the server.
+
 v0.2.0
 
     * Transparent support for streaming reads of large request bodies.

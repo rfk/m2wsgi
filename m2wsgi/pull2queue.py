@@ -42,7 +42,7 @@ In the REQ-based protocol offered by this helper, each socket instead connects
 to Mongrel2 with a REQ socket.  When it's ready for more work, the handler
 sends a request and Mongrel2 (via this helper script) replies with a sequence
 of pending requests for it to process.  This allows the handler to cleanly 
-shut itself down - it simply stops asking for new requests.
+shut itself down, by telling the socket not to send it any more requests.
 
 Another benefit of this approach is that quick requests do not get assigned
 to a handler that is busy with a slow request, which should help overall
@@ -86,17 +86,30 @@ def pull2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
     reqs = deque()
     workers = deque()
     def recv_worker(flags=0):
-        worker = out_sock.recv(flags)
-        #  throw away XREP framing chunk
-        out_sock.recv(flags)
-        #  throw away the request msg, it's irrelevant
-        out_sock.recv(flags)
-        return worker
+        while True:
+            worker = out_sock.recv(flags)
+            assert out_sock.recv(flags) == ""
+            msg = out_sock.recv(flags)
+            print "W", repr(msg)
+            if msg == "X":
+                #  it's a disconnect request
+                try:
+                    workers.remove(worker)
+                except ValueError:
+                    pass
+                disconnect_worker(worker)
+            else:
+                #  that worker is good to go
+                return worker
     def send_requests(worker,reqs,flags=0):
         reqs = encode_netstrings(reqs)
         out_sock.send(worker,zmq.SNDMORE | flags)
         out_sock.send("",zmq.SNDMORE | flags)
         out_sock.send(reqs,flags)
+    def disconnect_worker(worker):
+        out_sock.send(worker,zmq.SNDMORE)
+        out_sock.send("",zmq.SNDMORE)
+        out_sock.send("")
 
     while True:
         #  Wait for an incoming request, then batch it together
@@ -111,14 +124,16 @@ def pull2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
                 raise
         #  Wait for a ready worker, then gather any others
         #  that are also ready for work.
-        if not workers:
+        #  Note that we must loop here, because workers can be removed
+        #  from the ready list if they explicitly disconnect.
+        while not workers:
             workers.append(recv_worker())
-        try:
-            while True:
-                workers.append(recv_worker(zmq.NOBLOCK))
-        except zmq.ZMQError, e:
-            if e.errno != zmq.EAGAIN:
-                raise
+            try:
+                while True:
+                    workers.append(recv_worker(zmq.NOBLOCK))
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    raise
         #  Split the pending requests evenly amongst the workers.
         (reqs_per_worker,remainder) = divmod(len(reqs),len(workers))
         worker_num = 0
