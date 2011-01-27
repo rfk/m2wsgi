@@ -10,6 +10,7 @@ v0.3.0
           * socket can push requests to the handler asynchronously.
     * WSGIHandler._shutdown() now waits for all in-progress requests to
       complete before it terminates the server.
+    * Add experimental gevent IO module
     * Install command-line script "m2wsgi".
 
 v0.2.0

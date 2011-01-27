@@ -34,8 +34,8 @@ you can use eventlet to shuffle the bits around like so::
 
     m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
 
-I'm interested in adding support for other IO modules such as gevent;
-contributions welcome.
+You can also use --io=gevent if that's how you roll.  Contributions for
+other async backends are most welcome.
 
 
 Programmatic Usage
@@ -136,7 +136,6 @@ __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_su
 
 import sys
 import optparse
-import threading
 from textwrap import dedent
 try:
     import signal
@@ -202,6 +201,7 @@ def main(argv=None):
         handler = iomod.WSGIHandler(app,conn)
         handlers.append(handler)
         handler.serve()
+    import threading
     for i in xrange(opts.num_threads - 1):
         t = threading.Thread(target=run_handler)
         t.start()
