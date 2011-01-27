@@ -191,7 +191,9 @@ def main(argv=None):
         iomod.monkey_patch()
     #  Try hard to clean up properly when killed
     if signal is not None:
-        signal.signal(signal.SIGTERM,lambda *a: sys.exit(1))
+        def interrupt():
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM,lambda *a: interrupt)
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
     handlers = []
