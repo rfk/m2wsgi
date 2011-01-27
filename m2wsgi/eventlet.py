@@ -9,7 +9,7 @@ that are specifically tuned for running under eventlet.  You can import
 and use the classes directory from here, or you can select this module
 when launching m2wsgi from the command-line::
 
-    python -m m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
+    m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
 
 """
 

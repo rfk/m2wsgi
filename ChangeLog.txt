@@ -1,13 +1,16 @@
 
-v0.2.1
+v0.3.0
 
     * New method Connection.shutdown() to stop receiving more requests,
       but allow processing of any that are already received.
-    * Changed custom request protocol from REQ to XREQ.  It now sends an
-      explicit shutdown message to the send socket, to abort a request
-      that may already be in the system when shutdown() is called.
+    * Much improved custom request protocol with clean shutdown:
+          * socket type changed from from REQ to XREQ.
+          * helper renamed from pull2queue => devices.pull2xreq
+          * handler now sends an explicit shutdown message to the socket.
+          * socket can push requests to the handler asynchronously.
     * WSGIHandler._shutdown() now waits for all in-progress requests to
       complete before it terminates the server.
+    * Install command-line script "m2wsgi".
 
 v0.2.0
 

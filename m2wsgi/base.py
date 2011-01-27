@@ -92,16 +92,17 @@ class Connection(object):
     of socket to use.  The defaults are zmq.PULL and zmq.PUB respectively.
     Currently supported send socket types are:
 
-        * zmq.PULL:  The standard push socket offered by Mongrel2.  This
+        * zmq.PULL:  The standard pull socket offered by Mongrel2.  This
                      is very efficient but offers no way to detect handlers
                      that have disconnected.
 
-        * zmq.XREQ:  A request-response socket.  The handler explicitly asks
-                     for new requests.  This is a little slower but allows
-                     clients to cleanly disconnect (they just stop asking for
-                     requests).  For now, you must run the "pull2queue" script
-                     included in this module to translate mongrel2's PULL
-                     socket into an XREP socket to connect in this mode.
+        * zmq.XREQ:  A chattier pull socket.  Each handler explicitly sends
+                     a message to register itself with the socket, and can
+                     send a special "disconnect" message to stop receiving
+                     requests and effect a clean shutdown.  To use it, you
+                     must run the "pull2xreq" helper device to translate
+                     mongrel2's PULL socket into an XREQ socket that speaks
+                     this protocol.
 
     Currently supported recv socket types are:
 
@@ -192,24 +193,29 @@ class Connection(object):
     def _recv_XREQ(self,blocking=True):
         """Receive a request via a XREQ-type send socket.
  
-        This is a custom protocol.  We send an empty request message to the
-        socket, and get back a sequence of requests.  We return the first
-        and put the remainder into the recv_buffer.
+        This is a custom protocol that lets the handler chat with the socket
+        about its availability.  When we're about to block waiting for more
+        requests, we first send the socket a message to let it know we're
+        stil; alive.  It will then push messages to us until we send it an
+        explicit shutdown message.
         """
-        if not self.recv_buffer:
-            if not blocking:
-                return None
-            self.reqs.send("",zmq.SNDMORE)
-            self.reqs.send("")
-            delim = self.reqs.recv()
+        if self.recv_buffer:
+            return self.recv_buffer.popleft()
+        try:
+            delim = self.reqs.recv(zmq.NOBLOCK)
             assert delim == "", "non-empty msg delimiter: "+delim
-            msgs = self.reqs.recv()
-            if not msgs:
-                raise RuntimeError("XREQ socket shut down unexpectedly")
-            while msgs:
-                (msg,msgs) = pop_netstring(msgs)
-                self.recv_buffer.append(msg)
-        return self.recv_buffer.popleft()
+            return self.reqs.recv(zmq.NOBLOCK)
+        except zmq.ZMQError, e:
+            if e.errno != zmq.EAGAIN:
+                if not self._has_shutdown or e.errno != zmq.ENOTSUP:
+                    raise
+        if not blocking:
+            return None
+        self.reqs.send("",zmq.SNDMORE)
+        self.reqs.send("")
+        delim = self.reqs.recv()
+        assert delim == "", "non-empty msg delimiter: "+delim
+        return self.reqs.recv()
 
     def send(self,target,cid,data):
         """Send a response to the specified target mongrel2 instance."""

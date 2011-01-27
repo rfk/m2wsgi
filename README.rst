@@ -5,8 +5,13 @@ m2wsgi:  a mongrel2 => wsgi gateway
 
 
 This module provides a WSGI gateway handler for the Mongrel2 webserver,
-allowing easy deployment of python apps on Mongrel2.  You might also find
-its supporting classes useful for developing non-WSGI handlers in python.
+allowing easy deployment of python apps on Mongrel2.  It provides full support
+for chunked response encoding, streaming reads of large file uploads, and
+pluggable backends for evented I/O a la eventlet.
+
+You might also find its supporting classes useful for developing non-WSGI
+handlers in python.
+
 
 
 Command-line usage
@@ -14,19 +19,20 @@ Command-line usage
 
 The simplest way to use this package is as a command-line launcher::
 
-    python -m m2wsgi dotted.app.name tcp://127.0.0.1:9999
+    m2wsgi dotted.app.name tcp://127.0.0.1:9999
 
 This will connect to Mongrel2 on the specified request port and start handling
 requests by passing them through the specified WSGI app.  By default you will
 get a single worker thread handling all requests, which is probably not what
 you want; increase the number of threads like so::
 
-    python -m m2wsgi --num-threads=5 dotted.app.name tcp://127.0.0.1:9999
+    m2wsgi --num-threads=5 dotted.app.name tcp://127.0.0.1:9999
 
-Or if threads aren't your thing, use eventlet to shuffle the bits around
-like so::
+If threads aren't your thing, you can just start several instances of the
+handler pointing at the same zmq socket and get the same effect.  Better yet,
+you can use eventlet to shuffle the bits around like so::
 
-    python -m m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
+    m2wsgi --io=eventlet dotted.app.name tcp://127.0.0.1:9999
 
 I'm interested in adding support for other IO modules such as gevent;
 contributions welcome.
@@ -43,15 +49,28 @@ server interface.  The equivalent of the above command-line usage is::
     handler = WSGIHandler(my_wsgi_app,"tcp://127.0.0.1:9999")
     handler.serve()
 
+There are a lot of "sensible defaults" being filled in here.  It assumes
+that the Mongrel2 recv socket is on the next port down from the send socket,
+and that it's OK to connect the socket without a persistent identity.
+
 For finer control over the connection between your handler and Mongrel2,
 create your own Connection object::
 
     from m2wsgi.base import WSGIHandler, Connection
     conn = Connection(send_spec="tcp://127.0.0.1:9999",
-                      recv_spec="tcp://127.0.0.1:9999",
+                      recv_spec="tcp://127.0.0.1:9992",
                       send_ident="9a5eee79-dbd5-4f33-8fd0-69b304c6035a")
     handler = WSGIHandler(my_wsgi_app,conn)
     handler.serve()
+
+If you're creating non-WSGI handlers for Mongrel2 you might find the following
+classes useful:
+
+    * Connection:  represents the connection from your handler to Mongrel2,
+                   through which you can read requests and rend responses.
+
+    * Request:  represents a client request to which you can asynchronously
+                send response data at any time.
 
 
 Don't we already have one of these?
@@ -88,8 +107,8 @@ Current bugs, limitations and things to do
 
 It's not all perfect just yet, although it does seem to mostly work:
 
-    * Needs tests something fierce!  I just have to find the patiences to
-      write all the setup and teardown cruft.
+    * Needs tests something fierce!  I just have to find the patience to
+      write the necessary setup and teardown cruft.
 
     * When running multiple threads, ctrl-C doesn't cleanly exit the process.
       Seems like the background threads get stuck in a blocking recv().
