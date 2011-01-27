@@ -88,6 +88,9 @@ Current bugs, limitations and things to do
 
 It's not all perfect just yet, although it does seem to mostly work:
 
+    * Needs tests something fierce!  I just have to find the patiences to
+      write all the setup and teardown cruft.
+
     * When running multiple threads, ctrl-C doesn't cleanly exit the process.
       Seems like the background threads get stuck in a blocking recv().
       I *really* don't want to emulate interrupts using zmq_poll...

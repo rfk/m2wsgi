@@ -1,0 +1,11 @@
+
+v0.2.0
+
+    * Transparent support for streaming reads of large request bodies.
+    * Support for a REQ-based handler protocol as an alternative to
+      mongrel2's standard PULL-based protocol.  See m2wsgi/pull2qeue.py.
+    * And of course, many bugfixes ad WSGI compatability improvements.
+
+v0.1.0
+
+    * initial release; you might say *everything* has changed.
