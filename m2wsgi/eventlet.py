@@ -23,6 +23,62 @@ from eventlet.hubs import use_hub
 from eventlet import tpool
 eventlet.hubs.use_hub("zeromq")
 
+#  Eventlet has buggy support for non-blocking zmq requests:
+#
+#     https://bitbucket.org/which_linden/eventlet/issue/76/
+#
+_BaseSocket = zmq.__zmq__.Socket
+class _Socket(_BaseSocket):
+    def _send_message(self,msg,flags=0):
+        if flags & zmq.NOBLOCK:
+            super(_Socket,self)._send_message(msg,flags)
+            return
+        flags |= zmq.NOBLOCK
+        while True:
+            try:
+                super(_Socket,self)._send_message(msg,flags)
+                return
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    raise
+            zmq.trampoline(self,write=True)
+    def _send_copy(self,msg,flags=0):
+        if flags & zmq.NOBLOCK:
+            super(_Socket,self)._send_copy(msg,flags)
+            return
+        flags |= zmq.NOBLOCK
+        while True:
+            try:
+                super(_Socket,self)._send_copy(msg,flags)
+                return
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    raise
+            zmq.trampoline(self,write=True)
+    def _recv_message(self,flags=0,track=False):
+        if flags & zmq.NOBLOCK:
+            return super(_Socket,self)._recv_message(flags,track)
+        flags |= zmq.NOBLOCK
+        while True:
+            try:
+                return super(_Socket,self)._recv_message(flags,track)
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    raise
+            zmq.trampoline(self,read=True)
+    def _recv_copy(self,flags=0):
+        if flags & zmq.NOBLOCK:
+            return super(_Socket,self)._recv_copy(flags)
+        flags |= zmq.NOBLOCK
+        while True:
+            try:
+                return super(_Socket,self)._recv_copy(flags)
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    raise
+            zmq.trampoline(self,read=True)
+zmq.Socket = _Socket
+
 
 def monkey_patch():
     """Hook to monkey-patch the interpreter for this IO module."""

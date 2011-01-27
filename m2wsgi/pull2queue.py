@@ -90,7 +90,6 @@ def pull2queue(in_spec,out_spec,in_ident=None,out_ident=None,max_batch_size=10):
             worker = out_sock.recv(flags)
             assert out_sock.recv(flags) == ""
             msg = out_sock.recv(flags)
-            print "W", repr(msg)
             if msg == "X":
                 #  it's a disconnect request
                 try:
