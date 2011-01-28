@@ -110,6 +110,10 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
+    * The pull2xreq device currently can't detect clients that die without
+      disconnecting, and will continue trying to send them requests
+      indefinitely.  Not sure how to fix this...
+
     * When running multiple threads, ctrl-C doesn't cleanly exit the process.
       Seems like the background threads get stuck in a blocking recv().
       I *really* don't want to emulate interrupts using zmq_poll...

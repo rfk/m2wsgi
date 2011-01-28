@@ -35,8 +35,8 @@ OK, but why?
 In the standard PULL-based protocol, each handler process connects with a PULL
 socket and requests are sent round-robin to all connected handlers.  This is
 great for throughput but offers no way for a handler to cleanly disconnect -
-if it goes offline with pending requests queued to it, those requests will 
-be dropped.
+if it goes offline with pending requests queued to it, those requests can 
+get dropped.
 
 In the XREQ-based protocol offered by this helper, each socket instead connects
 to Mongrel2 (via this helper device) with a XREQ socket.  When it's ready for
