@@ -1,7 +1,7 @@
 """
 
-m2wsgi.pull2xreq:  turn a PULL send socket into a XREQ send socket
-==================================================================
+m2wsgi.device.pull2xreq:  turn a PULL send socket into a XREQ send socket
+========================================================================
 
 
 This is a helper device implementing an experimental alternate protocol for
