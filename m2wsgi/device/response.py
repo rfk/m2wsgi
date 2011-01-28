@@ -8,10 +8,24 @@ This is a simple device for sending a canned response to all requests.
 You might use it for e.g. automatically redirecting based on host or route
 information.   Use it like so::
 
+    #  Redirect requests to canonical domain
     python -m m2wsgi.device.response \
               --code=302 --status="Moved Permanently"\
-              --header-Location="www.example.com\\1"
+              --header-Location="http://www.example.com%(PATH)s"
+              --body-Location="Redirecting to http://www.example.com\r\n"
+              --send-ident="836c41fd-0fbe-4c04-aa33-985d854e1069"
               tcp://127.0.0.1:9999
+
+
+Some things to note:
+
+    * you can separately specify the status code, message, headers and body.
+
+    * the body and headers can contain python string-interpolation patterns,
+      which will be filled in with values from the request headers.
+
+    * you can also specify any of the m2wsgi connection options, such as
+      --send-ident or --send-type.
 
 """
 
@@ -27,6 +41,8 @@ def response(conn,code=200,status="OK",headers={},body=""):
     status_line = "HTTP/1.1 %d %s\r\n" % (code,status,)
     while True:
         req = conn.recv()
+        req.headers["PREFIX"] = prefix = req.headers["PATTERN"].split("(",1)[0]
+        req.headers["MATCH"] = req.headers["PATH"][len(prefix):]
         req.respond(status_line)
         for (k,v) in headers.iteritems():
             req.respond(k)
@@ -40,8 +56,8 @@ def response(conn,code=200,status="OK",headers={},body=""):
 
 
 if __name__ == "__main__":
-    #  We're going our own option parsing so we can handle
-    #  arbitrary --header-<HEADER> options.
+    #  We're doing our own option parsing so we can handle
+    #  arbitrary --header-<HEADER> options.  It's really not so hard...
     def help():
         sys.stderr.write(dedent("""
         usage:  m2wsgi.device.response [options] send_spec [recv_spec]

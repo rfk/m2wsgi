@@ -52,6 +52,19 @@ In the future this device may grow more complex request-routing features,
 e.g. measuring the throughput of each connected handler and adjusting its
 load accordingly.  Maybe.  Some day.
 
+
+Any Downsides?
+--------------
+
+Currently yes.  The protocol has no way of detecting handlers that die
+unexpectedly, and it will keep sending requests to them until they reappear.
+
+One option for detecting this is to send up to a maximum number of requests
+before forcing the handler to re-query the socket.  This seems like it could
+be detrimental to performance.
+
+Still working on a way to have the best of both worlds... 
+
 """
 
 import sys

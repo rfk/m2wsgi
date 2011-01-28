@@ -633,7 +633,7 @@ class WSGIHandler(object):
             environ = {}
         #  Include keys required by the spec
         environ["REQUEST_METHOD"] = req.headers["METHOD"]
-        script_name = req.headers.get("PREFIX",req.headers["PATTERN"])
+        script_name = req.headers["PATTERN"].split("(",1)[0]
         while script_name.endswith("/"):
             script_name = script_name[:-1]
         environ["SCRIPT_NAME"] = unquote_path(script_name)
