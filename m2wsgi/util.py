@@ -8,8 +8,47 @@ Take a look around, but there's not a lot to see...
 
 """
 
+import sys
+import os
 import re
 from urllib import unquote
+
+
+def fix_absolute_import(filename):
+    """Fix broken absolute imports when running submodules as a script.
+
+    So here's the problem.  When you run things as scripts, python likes to
+    put the current directory in your sys.path.  If the thing you're running
+    has the same name as a top-level python module, it makes that module
+    unavailable.  Like this::
+
+        #> cd m2wsgi/
+        #> python eventlet.py
+        Traceback (most recent call last):
+          File "eventlet.py", line 20, in <module>
+            import eventlet.hubs
+          File "<...>/m2wsgi/eventlet.py", line 20, in <module>
+            import eventlet.hubs
+        ImportError: No module named hubs
+        #>
+
+    Here python is trying to import the m2wsgi.eventlet module as the top-level
+    eventlet module, and this obviously doesn't work!  To fix it, put this
+    at the top of eventlet.py::
+
+        from __future__ import absolute_import
+        from m2wsgi.util import fix_absolute_import
+        fix_absolute_import(__file__)
+
+    This will ensure that the submodule's parent directory isn't on sys.path,
+    so there's no possibility of python importing it as something else by
+    mistake.
+    """
+    if not sys.path:
+        return
+    syspath0 = os.path.realpath(sys.path[0])
+    if syspath0 == os.path.dirname(os.path.realpath(filename)):
+        del sys.path[0]
 
 
 def load_dotted_name(name):

@@ -18,6 +18,8 @@ You will need the gevent_zeromq package from here:
 """
 
 from __future__ import absolute_import 
+from m2wsgi.util import fix_absolute_import
+fix_absolute_import(__file__)
 
 from m2wsgi import base
 
