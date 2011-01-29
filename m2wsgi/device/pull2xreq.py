@@ -56,85 +56,200 @@ load accordingly.  Maybe.  Some day.
 Any Downsides?
 --------------
 
-Currently yes.  The protocol has no way of detecting handlers that die
-unexpectedly, and it will keep sending requests to them until they reappear.
+Yes.  The protocol has no way of detecting handlers that die unexpectedly,
+so it will keep sending requests to them which will be queued within zmq
+until the handler reappears.
 
-One option for detecting this is to send up to a maximum number of requests
-before forcing the handler to re-query the socket.  This seems like it could
-be detrimental to performance.
+To mitigate this the device periodically resets its list of available
+handlers, forcing them to re-contact the device for more work.  By default
+this timer triggers every second (using SIGALRM).
 
-Still working on a way to have the best of both worlds... 
+Still working on a way to have the best of both worlds, but zmq doesn't seem
+to deliver any disconnection info to userspace...
 
 """
 
 import sys
 import optparse
+import signal
+import errno
 from textwrap import dedent
 from collections import deque
 
 import zmq.core.poll
 
-from m2wsgi.util import encode_netstrings
+
+class CheckableQueue(object):
+    """Combine a deque and a set for fast queueing and membership checking."""
+    def __init__(self):
+        self.__members = set()
+        self.__queue = deque()
+    def __contains__(self,item):
+        return item in self.__members
+    def __len__(self):
+        return len(self.__members)
+    def clear(self):
+        self.__members.clear()
+        self.__queue.clear()
+    def append(self,item):
+        if item not in self.__members:
+            self.__members.add(item)
+            self.__queue.append(item)
+    def popleft(self):
+        while True:
+            item = self.__queue.popleft()
+            try:
+                self.__members.remove(item)
+            except ValueError:
+                pass
+            else:
+                return item
+    def remove(self,item):
+        self.__members.remove(item)
 
 
-def pull2xreq(in_spec,out_spec,in_ident=None,out_ident=None):
-    """Run the pull2xreq translator device."""
-    #  The input socket is a PULL socket from which we read requests.
-    CTX = zmq.Context()
-    in_sock = CTX.socket(zmq.PULL)
-    if in_ident is not None:
-        in_sock.setsockopt(zmq.IDENTITY,in_ident)
-    in_sock.connect(in_spec)
-    #  The output socket is an XREP socket.
-    #  We read messages from connected handlers, and send requets to them.
-    out_sock = CTX.socket(zmq.XREP)
-    if out_ident is not None:
-        out_sock.setsockopt(zmq.IDENTITY,out_ident)
-    out_sock.bind(out_spec)
+class PULL2XREQ(object):
+    """Device for translating a PULL-type send socket into a XREQ-type socket.
 
-    avail_handlers = deque()
-    disconnect_handlers = set()
-    all_socks = [in_sock,out_sock]
-    while True:
-        (r,w,e) = zmq.core.poll.select(all_socks,all_socks,all_socks)
+    """
+
+    def __init__(self,in_spec,out_spec,in_ident=None,out_ident=None,
+                 heartbeat_interval=1):
+        self.in_spec = in_spec
+        self.out_spec = out_spec
+        self.in_ident = in_ident
+        self.out_ident = out_ident or in_ident
+        self.heartbeat_interval = heartbeat_interval
+        self.ZMQ_CTX = zmq.Context()
+        #  The input socket is a PULL socket from which we read requests.
+        self.in_sock = self.ZMQ_CTX.socket(zmq.PULL)
+        if self.in_ident is not None:
+            self.in_sock.setsockopt(zmq.IDENTITY,self.in_ident)
+        self.in_sock.connect(self.in_spec)
+        #  The output socket is an XREP socket.
+        #  We read messages from connected handlers, and send requets to them.
+        self.out_sock = self.ZMQ_CTX.socket(zmq.XREP)
+        if self.out_ident is not None:
+            self.out_sock.setsockopt(zmq.IDENTITY,self.out_ident)
+        self.out_sock.bind(self.out_spec)
+        self.old_handlers = CheckableQueue()
+        self.new_handlers = CheckableQueue()
+        self.disconnecting_handlers = CheckableQueue()
+        self.ready_requests = deque()
+        self.alarm_state = 0
+
+    def run(self):
+        """Run the socket handlering loop."""
+        signal.signal(signal.SIGALRM,self._alarm)
+        while True:
+            (r,w) = self.poll()
+            if self.out_sock in r:
+                self._read_handler()
+            if self.in_sock in r:
+                self._read_request()
+            if self.out_sock in w:
+                if self.disconnecting_handlers:
+                    self._send_disconnect()
+                elif self.ready_requests:
+                    self._send_request()
+            if self.alarm_state == 2:
+                self.old_handlers.clear()
+                self.alarm_state = 0
+
+    def poll(self):
+        """Get the sockets that are ready for work."""
+        #  Get something to do, recovering from interrupted system calls.
+        #  Only poll for writability if we have something to write.
+        #  Otherwise we can busy-loop on the write-ready socket.
+        socks = [self.in_sock,self.out_sock]
+        try:
+            wsocks = []
+            if self.ready_requests:
+                if self.new_handlers:
+                    wsocks = socks
+                elif self.old_handlers:
+                    wsocks = socks
+            elif self.disconnecting_handlers:
+                wsocks = socks
+            (r,w,e) = zmq.core.poll.select(socks,wsocks,socks)
+        except zmq.ZMQError, e:
+            if e.errno not in (errno.EINTR,):
+                raise
+            (r,w,e) = ([],[],[])
         if e:
             raise RuntimeError("sockets have errored out")
-        #  If there's a message from a handler, process it and adjust
-        #  the list of available/disconnected handlers accordingly.
-        if out_sock in r:
-            handler = out_sock.recv()
-            delim = out_sock.recv()
-            assert delim == "", "non-empty msg delimiter: "+delim
-            msg = out_sock.recv()
-            if msg == "X":
-                disconnect_handlers.add(handler)
-                if handler in avail_handlers:
-                    avail_handlers.remove(handler)
-            else:
-                if handler not in avail_handlers:
-                    avail_handlers.append(handler)
-                if handler in disconnect_handlers:
-                    disconnect_handlers.remove(handler)
-        #  All our actions involve writing to the out socket,
-        #  so we can't do anything until its ready.
-        if out_sock in w:
-            #  Process disconnect requests first, as they should be
-            #  infrequent compared to incoming requests.
-            if disconnect_handlers:
-                handler = disconnect_handlers.pop()
-                out_sock.send(handler,zmq.SNDMORE)
-                out_sock.send("",zmq.SNDMORE)
-                out_sock.send("")
-            #  Then send any incoming request to the next available
-            #  handler in the queue.
-            elif in_sock in r and avail_handlers:
-                req = in_sock.recv()
-                handler = avail_handlers.popleft()
-                out_sock.send(handler,zmq.SNDMORE)
-                out_sock.send("",zmq.SNDMORE)
-                out_sock.send(req)
-                avail_handlers.append(handler)
+        print r,w
+        return (r,w)
 
+    def _alarm(self,sig,frm):
+        print "ALARM"
+        self.alarm_state = 2
+        
+    def _read_handler(self):
+        handler = self.out_sock.recv()
+        delim = self.out_sock.recv()
+        assert delim == "", "non-empty msg delimiter: "+delim
+        msg = self.out_sock.recv()
+        #  If is a diconnect message, handlers goes into disconnecting_handlers
+        if msg == "X":
+            self.disconnecting_handlers.append(handler)
+            try:
+                self.new_handlers.remove(handler)
+            except ValueError:
+                pass
+            try:
+                self.old_handlers.remove(handler)
+            except ValueError:
+                pass
+        #  If is a heartbeat message, handlers goes into new_handlers
+        else:
+            self.new_handlers.append(handler)
+            try:
+                self.disconnecting_handlers.remove(handler)
+            except ValueError:
+                pass
+            try:
+                self.old_handlers.remove(handler)
+            except ValueError:
+                pass
+
+    def _read_request(self):
+        req = self.in_sock.recv()
+        self.ready_requests.append(req)
+        if self.alarm_state == 0:
+            signal.alarm(self.heartbeat_interval)
+            self.alarm_state = 1
+
+    def _send_disconnect(self):
+        handler = self.disconnecting_handlers.popleft()
+        self.out_sock.send(handler,zmq.SNDMORE)
+        self.out_sock.send("",zmq.SNDMORE)
+        self.out_sock.send("")
+
+    def _send_request(self):
+        handler = None
+        try:
+            handler = self.new_handlers.popleft()
+        except IndexError:
+            try:
+                handler = self.old_handlers.popleft()
+            except IndexError:
+                pass
+        if handler is not None:
+            req = self.ready_requests.popleft()
+            self.out_sock.send(handler,zmq.SNDMORE)
+            self.out_sock.send("",zmq.SNDMORE)
+            self.out_sock.send(req)
+            self.old_handlers.append(handler)
+        if self.alarm_state == 0:
+            signal.alarm(self.heartbeat_interval)
+            self.alarm_state = 1
+
+
+def pull2xreq(in_spec,out_spec,in_ident=None,out_ident=None,
+              heartbeat_interval=1):
+    """Run the pull2xreq translator device."""
+    PULL2XREQ(in_spec,out_spec,in_ident,out_ident,heartbeat_interval).run()
 
 
 if __name__ == "__main__":

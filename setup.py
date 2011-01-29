@@ -50,7 +50,7 @@ CLASSIFIERS = [
 ]
 
 
-PACKAGES = ["m2wsgi","m2wsgi.tests",]
+PACKAGES = ["m2wsgi","m2wsgi.tests","m2wsgi.device",]
 SCRIPTS = ["scripts/m2wsgi",]
 
 setup(name=NAME,
