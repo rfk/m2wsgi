@@ -30,6 +30,7 @@ Some things to note:
 """
 
 import sys
+import traceback
 
 from m2wsgi.base import Connection
 
@@ -41,18 +42,25 @@ def response(conn,code=200,status="OK",headers={},body=""):
     status_line = "HTTP/1.1 %d %s\r\n" % (code,status,)
     while True:
         req = conn.recv()
-        req.headers["PREFIX"] = prefix = req.headers["PATTERN"].split("(",1)[0]
-        req.headers["MATCH"] = req.headers["PATH"][len(prefix):]
-        req.respond(status_line)
-        for (k,v) in headers.iteritems():
-            req.respond(k)
-            req.respond(": ")
-            req.respond(v % req.headers)
-            req.respond("\r\n")
-        rbody = body % req.headers
-        req.respond("Content-Length: %d\r\n\r\n" % (len(rbody),))
-        if rbody:
-            req.respond(rbody)
+        print req.headers
+        try:
+            prefix = req.headers.get("PATTERN","").split("(",1)[0]
+            req.headers["PREFIX"] = prefix
+            req.headers["MATCH"] = req.headers.get("PATH","")[len(prefix):]
+            req.headers.setdefault("host","")
+            req.respond(status_line)
+            for (k,v) in headers.iteritems():
+                req.respond(k)
+                req.respond(": ")
+                req.respond(v % req.headers)
+                req.respond("\r\n")
+            rbody = body % req.headers
+            req.respond("Content-Length: %d\r\n\r\n" % (len(rbody),))
+            if rbody:
+                req.respond(rbody)
+        except Exception:
+            req.kill()
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
