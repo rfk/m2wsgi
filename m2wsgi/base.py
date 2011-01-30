@@ -146,6 +146,10 @@ class Connection(object):
         if self.send_ident is not None:
             self.reqs.setsockopt(zmq.IDENTITY,self.send_ident)
         self.reqs.connect(self.send_spec)
+        if self.send_type == zmq.XREQ:
+            self.reqs.send("",zmq.SNDMORE)
+            self.reqs.send("")
+            self._pending_heartbeat = False
         self.resps = self.ZMQ_CTX.socket(self.recv_type)
         if self.recv_ident is not None:
             self.resps.setsockopt(zmq.IDENTITY,self.recv_ident)
@@ -190,32 +194,47 @@ class Connection(object):
                         raise
                 return None
 
-    def _recv_XREQ(self,blocking=True):
+    def _recv_XREQ(self,blocking=True,heartbeat=True):
         """Receive a request via a XREQ-type send socket.
  
         This is a custom protocol that lets the handler chat with the socket
-        about its availability.  When we're about to block waiting for more
-        requests, we first send the socket a message to let it know we're
-        stil; alive.  It will then push messages to us until we send it an
-        explicit shutdown message.
+        about its availability.  Whenever we receive an empty message from
+        the socket, we send one in reply so it knows we're still alive.
         """
         if self.recv_buffer:
             return self.recv_buffer.popleft()
-        try:
-            delim = self.reqs.recv(zmq.NOBLOCK)
-            assert delim == "", "non-empty msg delimiter: "+delim
-            return self.reqs.recv(zmq.NOBLOCK)
-        except zmq.ZMQError, e:
-            if e.errno != zmq.EAGAIN:
-                if not self._has_shutdown or e.errno != zmq.ENOTSUP:
-                    raise
-        if not blocking:
-            return None
-        self.reqs.send("",zmq.SNDMORE)
-        self.reqs.send("")
-        delim = self.reqs.recv()
-        assert delim == "", "non-empty msg delimiter: "+delim
-        return self.reqs.recv()
+        msg = ""
+        while True:
+            #  Send any required heartbeat message.
+            #  This is always blocking.
+            if self._pending_heartbeat:
+                if not blocking or not heartbeat:
+                    return None
+                self.reqs.send("",zmq.SNDMORE)
+                self.reqs.send("")
+                self._pending_heartbeat = False
+            #  Grab the next available message, either
+            #  blocking or non-blocking as requested.
+            if blocking:
+                delim = self.reqs.recv()
+                assert delim == "", "non-empty msg delimiter: "+delim
+                msg = self.reqs.recv(zmq.NOBLOCK)
+            else:
+                try:
+                    delim = self.reqs.recv(zmq.NOBLOCK)
+                    assert delim == "", "non-empty msg delimiter: "+delim
+                    msg = self.reqs.recv(zmq.NOBLOCK)
+                except zmq.ZMQError, e:
+                    if e.errno != zmq.EAGAIN:
+                        if not self._has_shutdown or e.errno != zmq.ENOTSUP:
+                            raise
+                    return None
+            #  If it's empty, the server wants another heartbeat.
+            #  If not, we've finally got our request.
+            if msg == "":
+                self._pending_heartbeat = True
+            else:
+                return msg
 
     def send(self,target,cid,data):
         """Send a response to the specified target mongrel2 instance."""
@@ -261,20 +280,14 @@ class Connection(object):
         """Shutdown a XREQ-type send socket.
 
         This sends a shutdown message to the socket to disconnect any
-        pending request.  We then recv replies until we get one that
-        is empty, signalling that the disconnect has been processed.
+        pending request.  We then recv replies until the server requests
+        a new heartbeat signal, which we don't send.
         """
         self.reqs.send("",zmq.SNDMORE)
         self.reqs.send("X")
-        delim = self.reqs.recv()
-        assert delim == "", "non-empty msg delimiter: "+delim
-        msgs = self.reqs.recv()
-        while msgs:
-            while msgs:
-                (msg,msgs) = pop_netstring(msgs)
-                self.recv_buffer.append(msg)
-            assert self.reqs.recv() == ""
-            msgs = self.reqs.recv()
+        req = self._recv_XREQ(heartbeat=False)
+        while req is not None:
+            self.recv_buffer.append(req)
         self.reqs.close()
 
     def close(self):
