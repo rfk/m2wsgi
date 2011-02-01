@@ -191,6 +191,15 @@ def main(argv=None):
         raise ValueError("too many arguments")
     if opts.num_threads <= 0:
         raise ValueError("--num-threads must be positive")
+    if opts.num_threads > 1:
+        if opts.send_ident is not None:
+            msg = "Using --num-threads with --send-ident will crash"
+            msg += " the mongrel2 server. Seriously.  Don't do that."
+            raise ValueError(msg)
+        if opts.recv_ident is not None:
+            msg = "Using --num-threads with --recv-ident will crash"
+            msg += " the mongrel2 server. Seriously.  Don't do that."
+            raise ValueError(msg)
     #  Grab the application, connection and handler class
     app = load_dotted_name(args[0])
     assert callable(app), "the specified app is not callable"
