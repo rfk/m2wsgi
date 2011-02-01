@@ -1,4 +1,26 @@
 
+v0.4.0
+
+    * Some API refactorings and cleanups:
+        * new class "Client" represents a client connection to which you can
+          send data; basically a (server id,conection id) tuple.
+        * new class "Handler" is a base class for handlers, with nothing
+          WSGI-specific.  Maybe useful for writing custom handlers.
+        * changed Request class:
+            * constructor now takes a Client object rather than the
+              combination of Connection, server id and client id.
+            * renamed Request.kill => Request.disconnect
+        * changed Connection class:
+            * send() now takes a Client object rather than a (target,cid) pair.
+        * changed WSGIHandler class:
+            * handle_request method split into "handle_request" for creating
+              threads and other management tasks, and "process_request" for
+              doing the actual work.
+    * don't force monkey-patching for gevent backend.
+    * added some utility middleware for use by the server:
+        * GZipMiddleware:  gzip response bodies
+        * BufferMiddleware:  buffer response bodied, for betting compression
+
 v0.3.0
 
     * New method Connection.shutdown() to stop receiving more requests,

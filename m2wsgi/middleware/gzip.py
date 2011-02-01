@@ -8,6 +8,8 @@ compliance (including e.g. streaming of data chunks).  Unless you tell it
 not to bother.
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
 
 
 from __future__ import absolute_import

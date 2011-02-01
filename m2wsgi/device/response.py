@@ -10,9 +10,10 @@ information.   Use it like so::
 
     #  Redirect requests to canonical domain
     python -m m2wsgi.device.response \
-              --code=302 --status="Moved Permanently"\
+              --code=302
+              --status="Moved Permanently"\
               --header-Location="http://www.example.com%(PATH)s"
-              --body-Location="Redirecting to http://www.example.com\r\n"
+              --body="Redirecting to http://www.example.com\r\n"
               --send-ident="836c41fd-0fbe-4c04-aa33-985d854e1069"
               tcp://127.0.0.1:9999
 
@@ -28,6 +29,9 @@ Some things to note:
       --send-ident or --send-type.
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
+
 
 import sys
 import traceback
@@ -42,7 +46,6 @@ def response(conn,code=200,status="OK",headers={},body=""):
     status_line = "HTTP/1.1 %d %s\r\n" % (code,status,)
     while True:
         req = conn.recv()
-        print req.headers
         try:
             prefix = req.headers.get("PATTERN","").split("(",1)[0]
             req.headers["PREFIX"] = prefix
@@ -59,7 +62,7 @@ def response(conn,code=200,status="OK",headers={},body=""):
             if rbody:
                 req.respond(rbody)
         except Exception:
-            req.kill()
+            req.disconnect()
             traceback.print_exc()
 
 

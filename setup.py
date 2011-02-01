@@ -44,7 +44,8 @@ KEYWORDS = "wsgi mongrel2"
 CLASSIFIERS = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 2",
-    "Programming Language :: Python :: 3",
+#   not tested yet, need to read up on PEP3333...
+#    "Programming Language :: Python :: 3",
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License"
 ]

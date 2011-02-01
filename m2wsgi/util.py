@@ -4,9 +4,12 @@ m2wsgi.util:  miscellaneous utility functions
 =============================================
 
 The standard kind of "util" module you'd expect from any python package.
-Take a look around, but there's not a lot to see...
+Low-level data format handlers, helper functions, that kind of thing...
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
+
 
 import sys
 import os
@@ -18,9 +21,9 @@ def fix_absolute_import(filename):
     """Fix broken absolute imports when running submodules as a script.
 
     So here's the problem.  When you run things as scripts, python likes to
-    put the current directory in your sys.path.  If the thing you're running
-    has the same name as a top-level python module, it makes that module
-    unavailable.  Like this::
+    put the current directory in your sys.path.  If anything in there has
+    the same name as a top-level python module, it masks that module and you
+    get broken imports.  Like this::
 
         #> cd m2wsgi/
         #> python eventlet.py
@@ -99,7 +102,11 @@ class InputStream(object):
     """An abstract base class for implementing WSGI input streams.
 
     You provide an implementation of the _read() method; this class provides
-    all the bits and bobs required for a WSGI input stream.
+    all the bits and bobs required for a WSGI input stream.  It's a stipped
+    down version of the FileLikeBase class from my filelike module:
+
+        http://www.rfk.id.au/software/filelike/
+
     """
 
     def __init__(self):

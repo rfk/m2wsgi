@@ -8,3 +8,6 @@ things that are frowned upon in normal WSGI middleware, but are permitted when
 you're the actual server.
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
+

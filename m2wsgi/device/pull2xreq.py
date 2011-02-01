@@ -14,7 +14,7 @@ Basic Usage
 -----------
 
 Suppose you have Mongrel2 pushing requests out to tcp://127.0.0.1:9999.
-Instead of connecting your handlers directory to this socket, run the
+Instead of connecting your handlers directly to this socket, run the
 pull2xreq device like so::
 
     python -m m2wsgi.device.pull2xreq \
@@ -25,8 +25,8 @@ them chat with it about their availability.  Make sure you specify the XREQ
 type for the send socket::
 
     m2wsgi --send-type=XREQ dotted.app.name \
-           tcp://127.0.0.1:9989  tcp://127.0.0.1:9998
-                   
+           tcp://127.0.0.1:8888  tcp://127.0.0.1:9998
+
 
 
 OK, but why?
@@ -80,7 +80,7 @@ import zmq.core.poll
 
 
 class CheckableQueue(object):
-    """Combine a deque and a set for fast queueing and membership checking."""
+    """Combine a deque and a set for O(1) queueing and membership checking."""
     def __init__(self):
         self.__members = set()
         self.__queue = deque()

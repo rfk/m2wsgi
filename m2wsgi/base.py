@@ -5,9 +5,28 @@ m2wsgi.base:  base handler implementation for m2wsgi
 
 This module contains the basic classes for implementing the m2wsgi handler.
 If you don't explicitly select a different IO module, you'll get the
-classes from in here.
+classes from in here.  We have the following classes:
+
+    :Connection:     represents the connection from your handler to Mongrel2,
+                     through which you can read requests and send responses.
+
+    :Client:         represents a client connected to the server, to whom you
+                     can send data at any time.
+
+    :Request:        represents a client request that you can asynchronously
+                     send response data to at any time.
+
+    :Handler:        a base class for implementing handlers, with nothing
+                     WSGI-specific in it.
+
+    :WSGIResponder:  a class for managing the stateful aspects of a WSGI
+                     response (status line, write callback, etc).
+
+    :WSGIHandler:    a handler subclass specifically running a WSGI app.
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
 
 import os
 import sys
@@ -23,9 +42,38 @@ from m2wsgi.util import pop_netstring, unquote_path, unquote, InputStream
 
 
 def monkey_patch():
-    """Hook to monkey-patch the interpreter for this IO module."""
+    """Hook to monkey-patch the interpreter for this IO module.
+
+    Obviously the base verion does nothing.  The gevent and eventlet modules
+    use this to monkey-patch their green classes into the interpreter.
+    """
     pass
 
+
+
+class Client(object):
+    """Mongrel2 client connection object.
+
+    Instances of this object represent a client connected to the Mongrel2
+    server.  They encapsulate the server id and client connection id, and
+    provide some handy methods to send data to the client.
+    """
+
+    def __init__(self,connection,server_id,client_id):
+        self.connection = connection
+        self.server_id = server_id
+        self.client_id = client_id
+
+    def __hash__(self):
+        return hash((self.connection,self.server_id,self.client_id))
+
+    def send(self,data):
+        """Send some data to this client."""
+        self.connection.send(self,data)
+
+    def disconnect(self):
+        """Terminate this client connection."""
+        self.connection.send(self,data)
 
 
 class Request(object):
@@ -36,43 +84,45 @@ class Request(object):
     and to send replies to the request.
     """
 
-    def __init__(self,connection,sender,cid,path,headers,body):
-        self.connection = connection
-        self.sender = sender
+    def __init__(self,client,path,headers,body):
+        self.client = client
         self.path = path
-        self.cid = cid
         self.headers = headers
         self.body = body
 
     @classmethod
-    def parse(cls,connection,msg):
-        """Parse a Request out of a Mongrel2 message.
+    def parse(cls,client,msg):
+        """Parse a Request out of a (partial) Mongrel2 message.
 
-        This is an alternate constructor for the class, which parses the
-        various data fields out of the raw Mongrel2 message.
+        This is an alternate constructor for the class, which takes the
+        client object and the leftover parts of the Mongrel2 message and
+        constructs a Request from that.
         """
-        (sender,cid,path,rest) = msg.split(' ', 3)
+        (path,rest) = msg.split(" ",1)
         (headers_str,rest) = pop_netstring(rest)
         (body,_) = pop_netstring(rest)
         headers = {}
+        #  Mongrel2 demands that everything be ASCII.
+        #  The json module makes all strings unicode.
+        #  *sigh*
         for (k,v) in json.loads(headers_str).iteritems():
             headers[k.encode("ascii")] = v.encode("ascii")
-        return cls(connection,sender,cid,path,headers,body)
+        return cls(client,path,headers,body)
 
     def respond(self,data):
         """Send some response data to the issuer of this request."""
-        self.connection.send(self.sender,self.cid,data)
+        self.client.send(data)
 
-    def kill(self):
+    def disconnect(self):
         """Terminate the connection associated with this request."""
-        self.connection.send(self.sender,self.cid,"")
+        self.client.disconnect()
  
 
 class Connection(object):
     """Mongrel2 connection object.
 
-    Instances of Connection represent a Handler connection to the main
-    Mongrel2 server.  They are used to receive requests and send responses.
+    Instances of Connection represent a handler's connection to the main
+    Mongrel2 server(s).  They are used to receive requests and send responses.
 
     When creating a connection, you must specify at least the 'send_spec'
     argument.  This gives the ZMQ socket address on which to receive requests
@@ -80,7 +130,7 @@ class Connection(object):
 
     If specified, the 'recv_spec' argument gives the ZMQ socket address to send
     response data back to mongrel2.  If not specified, it defaults to the same
-    host a send_spec and one port lower (which seems to be the convention for
+    host as send_spec and one port lower (which seems to be the convention for
     mongrel2 config).
 
     If specified, the 'send_ident' and 'recv_ident' arguments give the socket
@@ -114,6 +164,7 @@ class Connection(object):
 
     ZMQ_CTX = zmq.Context()
 
+    ClientClass = Client
     RequestClass = Request
 
     def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None,
@@ -173,7 +224,9 @@ class Connection(object):
             raise ValueError("unknown send_type: %s" % (self.send_type,))
         if msg is None:
             return None
-        return self.RequestClass.parse(self,msg)
+        (server_id,client_id,rest) = msg.split(' ', 2)
+        client = self.ClientClass(self,server_id,client_id)
+        return self.RequestClass.parse(client,rest)
 
     def _recv_PULL(self,blocking=True):
         """Receive a request via a PULL-type send socket.
@@ -236,14 +289,40 @@ class Connection(object):
             else:
                 return msg
 
-    def send(self,target,cid,data):
-        """Send a response to the specified target mongrel2 instance."""
-        cid = str(cid)
-        msg = "%s %d:%s, %s" % (target,len(cid),cid,data)
+    def _send(self,server_id,client_ids,data):
+        """Internal method to send out response data."""
+        msg = "%s %d:%s, %s" % (server_id,len(client_ids),client_ids,data)
         if self.recv_type == zmq.PUB:
             self.resps.send(msg)
         else:
             raise ValueError("unknown recv_type: %s" % (self.recv_type,))
+
+    def send(self,client,data):
+        """Send a response to the specified client."""
+        self._send(client.server_id,client.client_id,data)
+
+    def deliver(self,clients,data):
+        """Send the same response to multiple clients.
+
+        This more efficient than sending to them individually as it can
+        batch up the replies.
+        """
+        #  Batch up the client by their server id.
+        #  If we get more than 100 to the same server, send them
+        #  immediately.  The rest we send in a final iteration at the end.
+        cids_by_sid = {}
+        for client in clients:
+            (sid,cid) = (client.server_id,client.client_id)
+            if sid not in cids_by_sid:
+                cids_by_sid[sid] = [cid]
+            else:
+                cids = cids_by_sid[sid]
+                cids.append(cid)
+                if len(cids) == 100:
+                    self._send(sid," ".join(cids),data)
+                    del cids_by_sid[sid]
+        for (sid,cids) in cids_by_sid.itervalues():
+            self._send(sid," ".join(cids),data)
 
     def shutdown(self):
         """Shut down the connection.
@@ -294,6 +373,123 @@ class Connection(object):
         """Close the connection."""
         self.reqs.close()
         self.resps.close()
+
+
+class Handler(object):
+    """Mongrel2 request handler class.
+
+    Instances of Handler act as Mongrel2 handler process, dispatching
+    incoming requests to their 'process_request' method.  The base class
+    implementation does nothing.  See WSGIHandler for something useful.
+
+    Handler objects must be constructed by passing in a Connection object.
+    For convenience, you may pass a send_spec string instead of a Connection
+    and one will be created for you.
+
+    To enter the object's request-handling loop, call its 'serve' method; this
+    will block until the server exits.  To exit the handler loop, call the
+    'stop' method (probably from another thread).
+
+    If you want more control over the handler, e.g. to integrate it with some
+    other control loop, you can call the 'serve_one_request' to serve a 
+    single request.  Note that this will block if there is not a request
+    available - polling the underlying connection is up to you.
+    """
+
+    ConnectionClass = Connection
+
+    def __init__(self,connection):
+        self.started = False
+        self.serving = False
+        if isinstance(connection,basestring):
+            self.connection = self.ConnectionClass(connection)
+        else:
+            self.connection = connection
+
+    def serve(self):
+        """Serve requests delivered by Mongrel2, until told to stop.
+
+        This method is the main request-handling loop for Handler.  It calls
+        the 'serve_one_request' method in a tight loop until told to stop
+        by an explicit call to the 'stop' method.
+        """
+        self.serving = True
+        self.started = True
+        exc_info,exc_value,exc_tb = None,None,None
+        try:
+            while self.serving:
+                self.serve_one_request()
+        except Exception:
+            self.running = False
+            exc_info,exc_value,exc_tb = sys.exc_info()
+            raise
+        finally:
+            #  Shut down the connection, but don't hide the original error.
+            if exc_info is None:
+                self._shutdown()
+            else:
+                try:
+                    self._shutdown()
+                except Exception:
+                    print >>sys.stderr, "------- shutdown error -------"
+                    traceback.print_exc()
+                    print >>sys.stderr, "------------------------------"
+                raise exc_info,exc_value,exc_tb
+
+    def _shutdown(self):
+        self.connection.shutdown()
+        #  We have to handle anything that's already in our recv queue,
+        #  or the requests will get lost when we close the socket.
+        req = self.connection.recv(blocking=False)
+        while req is not None:
+            self.handle_request(req)
+        self.wait_for_completion()
+        self.connection.close()
+
+    def stop(self):
+        """Stop the request-handling loop and close down the connection."""
+        self.serving = False
+        self.started = False
+        # TODO: how to interrupt blocking recv?
+    
+    def serve_one_request(self):
+        """Receive and serve a single request from Mongrel2."""
+        req = self.connection.recv()
+        self.handle_request(req)
+
+    def handle_request(self,req):
+        """Handle the given Request object.
+
+        This method dispatches the given request object for processing.
+        The base implementation just calls the process_request() method;
+        subclasses might spawn a new thread or similar.
+
+        It's a good idea to return control to the calling code as quickly as
+        or you'll get a nice backlog of outstanding requests.
+        """
+        self.process_request(req)
+
+    def process_request(self,req):
+        """Process the given Request object.
+
+        This method is the guts of a Mongrel2 handler, where you implement
+        all your request-handling logic.  The base implementation does nothing.
+        """
+        pass
+
+    def wait_for_completion(self):
+        """Wait for all in-progress requests to be completed.
+
+        Since the handle_request() method may operate asynchronously
+        (e.g. by spawning a new thread) there must be a way to determine
+        when all in-progress requets have been compeleted.  WSGIHandler
+        subclasses should override this method to provide such behaviour.
+
+        Note that the default implementation does nothing, since requests
+        and handled synchronously in this case.
+        """
+        pass
+
 
 
 class WSGIResponder(object):
@@ -368,7 +564,7 @@ class WSGIResponder(object):
         if self.is_chunked:
             self._write("0\r\n\r\n")
         if self.should_close:
-            self.request.kill()
+            self.request.disconnect()
             
     def write_headers(self):
         """Write out the response headers from the stored data.
@@ -460,7 +656,7 @@ class StreamingUploadFile(InputStream):
             cursize = os.fstat(self.fileobj.fileno()).st_size
 
 
-class WSGIHandler(object):
+class WSGIHandler(Handler):
     """Mongrel2 Handler translating to WSGI.
 
     Instances of WSGIHandler act as Mongrel2 handler process, forwarding all
@@ -478,84 +674,22 @@ class WSGIHandler(object):
     If you want more control over the handler, e.g. to integrate it with some
     other control loop, you can call the 'serve_one_request' to serve a 
     single request.  Note that this will block if there is not a request
-    available - polling to underlying connection is up to you.
+    available - polling the underlying connection is up to you.
     """
 
-    ConnectionClass = Connection
     ResponderClass = WSGIResponder
     StreamingUploadClass = StreamingUploadFile
 
     def __init__(self,application,connection):
-        self.started = False
-        self.serving = False
         self.application = application
-        if isinstance(connection,basestring):
-            self.connection = self.ConnectionClass(connection)
-        else:
-            self.connection = connection
+        super(WSGIHandler,self).__init__(connection)
 
-    def serve(self):
-        """Serve requests delivered by Mongrel2, until told to stop.
-
-        This method is the main request-handling loop for WSGIHandler.  It
-        calls the 'serve_one_request' method in a tight loop until told to
-        stop by an explicit call to the 'stop' method.
-        """
-        self.serving = True
-        self.started = True
-        exc_info,exc_value,exc_tb = None,None,None
-        try:
-            while self.serving:
-                self.serve_one_request()
-        except Exception:
-            self.running = False
-            exc_info,exc_value,exc_tb = sys.exc_info()
-            raise
-        finally:
-            #  Shut down the connection, but don't hide the original error.
-            if exc_info is None:
-                self._shutdown()
-            else:
-                try:
-                    self._shutdown()
-                except Exception:
-                    print >>sys.stderr, "------- shutdown error -------"
-                    traceback.print_exc()
-                    print >>sys.stderr, "------------------------------"
-                raise exc_info,exc_value,exc_tb
-
-    def _shutdown(self):
-        self.connection.shutdown()
-        #  We have to handle anything that's already in our recv queue,
-        #  or the requests will get lost when we close the socket.
-        req = self.connection.recv(blocking=False)
-        while req is not None:
-            self.handle_request(req)
-        self.wait_for_completion()
-        self.connection.close()
-
-    def stop(self):
-        """Stop the request-handling loop and close down the connection."""
-        self.serving = False
-        self.started = False
-        # TODO: how to interrupt blocking recv?
-    
-    def serve_one_request(self):
-        """Receive and serve a single request from Mongrel2."""
-        req = self.connection.recv()
-        self.handle_request(req)
-
-    def handle_request(self,req):
-        """Handle the given Request object.
+    def process_request(self,req):
+        """Process the given Request object.
 
         This method is the guts of the Mongrel2 => WSGI gateway.  It translates
         the mongrel2 request into a WSGI environ, invokes the application and
         sends the resulting response back to Mongrel2.
-
-        Subclasses may override this method to control how and when the request
-        is handled, e.g. by spawning a new thread or adding it to a work queue.
-        It's a good idea to return control to the calling code as quickly as
-        or you'll get a nice backlog of outstanding requests.
         """
         #  Mongrel2 uses JSON requests internally.
         #  We don't want them in our WSGI.
@@ -609,7 +743,7 @@ class WSGIHandler(object):
                 responder.start_response("500 Server Error",[],sys.exc_info())
                 responder.write("server error")
                 responder.flush()
-            req.kill()
+            req.disconnect()
         finally:
             #  Make sure that the upload file is cleaned up.
             #  Mongrel doesn't reap these files itself, because the handler
@@ -626,19 +760,6 @@ class WSGIHandler(object):
                         os.unlink(upload_file)
                     except EnvironmentError:
                         pass
-
-    def wait_for_completion(self):
-        """Wait for all in-progress requests to be completed.
-
-        Since the handle_request() method may operate asynchronously
-        (e.g. by spawning a new thread) there must be a way to determine
-        when all in-progress requets have been compeleted.  WSGIHandler
-        subclasses should override this method to provide such behaviour.
-
-        Note that the default implementation does nothing, since requests
-        and handled synchronously in this case.
-        """
-        pass
 
     def get_wsgi_environ(self,req,environ=None):
         """Construct a WSGI environ dict for the given Request object."""

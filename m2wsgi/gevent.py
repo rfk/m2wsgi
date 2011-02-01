@@ -16,6 +16,9 @@ You will need the gevent_zeromq package from here:
     https://github.com/traviscline/gevent-zeromq
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
+
 
 from __future__ import absolute_import 
 from m2wsgi.util import fix_absolute_import
@@ -25,16 +28,17 @@ from m2wsgi import base
 
 import gevent
 import gevent.monkey
+import gevent.event
 from gevent_zeromq import zmq
 
 
 def monkey_patch():
-    """Hook to monkey-patch the interpreter for this IO module."""
-    gevent.monkey.patch_all()
+    """Hook to monkey-patch the interpreter for this IO module.
 
-#  Since we need a green Condition object, we must always monkey-patch
-monkey_patch()
-import threading
+    This calls the standard eventlet monkey-patching routines.  Don't worry,
+    it's not called by default unless you're running from the command line.
+    """
+    gevent.monkey.patch_all()
 
 
 class Connection(base.Connection):
@@ -44,7 +48,6 @@ class Connection(base.Connection):
 
 class StreamingUploadFile(base.StreamingUploadFile):
     #  Use green sleep function.
-    #  Unfortunately no threadpool to call os.fstat
     def _wait_for_data(self):
         curpos = self.fileobj.tell()
         cursize = os.fstat(self.fileobj.fileno()).st_size
@@ -53,35 +56,43 @@ class StreamingUploadFile(base.StreamingUploadFile):
             cursize = os.fstat(self.fileobj.fileno()).st_size
 
 
-class WSGIHandler(base.WSGIHandler):
-    __doc__ = base.WSGIHandler.__doc__ + """
-    This WSGIHandler subclass is designed for use with gevent.  It spawns a
+class Handler(base.Handler):
+    __doc__ = base.Handler.__doc__ + """
+    This Handler subclass is designed for use with gevent.  It spawns a
     a new green thread to handle each incoming request.
     """
 
     ConnectionClass = Connection
-    StreamingUploadClass = StreamingUploadFile
 
     def __init__(self,*args,**kwds):
-        super(WSGIHandler,self).__init__(*args,**kwds)
+        super(Handler,self).__init__(*args,**kwds)
         self._num_inflight_requests = 0
-        self._all_requests_complete = threading.Condition()
+        self._all_requests_complete = gevent.event.Event()
 
     def handle_request(self,req):
+        self._num_inflight_requests += 1
+        if self._num_inflight_requests >= 1:
+            self._all_requests_complete.clear()
         @gevent.spawn
         def do_handle_request():
-            with self._all_requests_complete:
-                self._num_inflight_requests += 1
-            super(WSGIHandler,self).handle_request(req)
-            with self._all_requests_complete:
+            try:
+                self.process_request(req)
+            finally:
                 self._num_inflight_requests -= 1
                 if self._num_inflight_requests == 0:
-                    self._all_requests_complete.notifyAll()
+                    self._all_requests_complete.set()
 
     def wait_for_completion(self):
-        with self._all_requests_complete:
-            if self._num_inflight_requests > 0:
-                self._all_requests_complete.wait()
+        if self._num_inflight_requests > 0:
+            self._all_requests_complete.wait()
+
+
+class WSGIHandler(base.WSGIHandler,Handler):
+    __doc__ = base.WSGIHandler.__doc__ + """
+    This WSGIHandler subclass is designed for use with gevent.  It spawns a
+    a new green thread to handle each incoming request.
+    """
+    StreamingUploadClass = StreamingUploadFile
 
 
 if __name__ == "__main__":

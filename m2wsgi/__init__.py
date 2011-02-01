@@ -69,8 +69,14 @@ classes useful:
     :Connection:  represents the connection from your handler to Mongrel2,
                   through which you can read requests and send responses.
 
+    :Client:      represents a client connected to the server, to whom you
+                  can send data at any time.
+
     :Request:     represents a client request to which you can asynchronously
                   send response data at any time.
+
+    :Handler:     a base class for implementing handlers, with nothing
+                  WSGI-specific in it.
 
 
 Don't we already have one of these?
@@ -110,29 +116,37 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
-    * The pull2xreq device currently can't detect clients that die without
-      disconnecting, and will continue trying to send them requests
-      indefinitely.  Not sure how to fix this...
+    * If the pull2xreq device dies, then any connected handlers will hang
+      forever waiting for it to send them work.  I think I'm going to have
+      to throw it away and try again with all the lessons learned.
 
     * When running multiple threads, ctrl-C doesn't cleanly exit the process.
       Seems like the background threads get stuck in a blocking recv().
       I *really* don't want to emulate interrupts using zmq_poll...
 
+    * Likewise for the gevent backend; ctrl-C doesn't cleanly exit the
+      process, at least not reliably.
+
     * The zmq load-balancing algorithm is greedy round-robin, which isn't
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
-      available.  I'm working on a zmq adapter that can do something better
-      (see the pull2xreq device in this distribution).
+      available.  I'm working on a zmq adapter that can do something better...
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
 
+    * When launched from the command-line, catch SIGHUP and/or SIGUSR1 and
+      re-execute  the handler.  This will allow easy auto-reload without
+      having to do any serious work.
+
 
 """
+#  Copyright (c) 2011, Ryan Kelly.
+#  All rights reserved; available under the terms of the MIT License.
 
 __ver_major__ = 0
-__ver_minor__ = 3
+__ver_minor__ = 4
 __ver_patch__ = 0
 __ver_sub__ = ""
 __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_sub__)
@@ -191,15 +205,17 @@ def main(argv=None):
     except (ImportError,AttributeError,):
         raise
         raise ValueError("not a m2wsgi IO module: %r" % (opts.io,))
-    if hasattr(iomod,"monkey_patch"):
-        iomod.monkey_patch()
-    #  Try hard to clean up properly when killed
+    iomod.monkey_patch()
+    #  Try to clean up properly when killed.
+    #  We turn SIGTERM into a KeyboardInterrupt exception.
     if signal is not None:
         def interrupt():
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM,lambda *a: interrupt)
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
+    #  Delay import of threading to allow for iomod monkey-patching.
+    import threading
     handlers = []
     threads = []
     def run_handler():
@@ -207,7 +223,6 @@ def main(argv=None):
         handler = iomod.WSGIHandler(app,conn)
         handlers.append(handler)
         handler.serve()
-    import threading
     for i in xrange(opts.num_threads - 1):
         t = threading.Thread(target=run_handler)
         t.start()
