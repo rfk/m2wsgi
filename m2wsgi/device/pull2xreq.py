@@ -130,7 +130,7 @@ class PULL2XREQ(object):
             self.in_sock.setsockopt(zmq.IDENTITY,self.in_ident)
         self.in_sock.connect(self.in_spec)
         #  The output socket is an XREP socket.
-        #  We read messages from connected handlers, and send requets to them.
+        #  We read messages from connected handlers, and send requests to them.
         self.out_sock = self.ZMQ_CTX.socket(zmq.XREP)
         if self.out_ident is not None:
             self.out_sock.setsockopt(zmq.IDENTITY,self.out_ident)

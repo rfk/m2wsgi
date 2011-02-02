@@ -35,6 +35,7 @@ import time
 import traceback
 from collections import deque
 from cStringIO import StringIO
+from email.utils import formatdate as rfc822_format_date
 
 import zmq
 
@@ -578,6 +579,7 @@ class WSGIResponder(object):
         self._write(self.status)
         self._write("\r\n")
         has_content_length = False
+        has_date = False
         for (k,v) in self.headers:
             self._write(k)
             self._write(": ")
@@ -585,6 +587,10 @@ class WSGIResponder(object):
             self._write("\r\n")
             if k.lower() == "content-length":
                 has_content_length = True
+        if not has_date:
+            self._write("Date: ")
+            self._write(rfc822_format_date())
+            self._write("\r\n")
         if not has_content_length:
             if self.request.headers["VERSION"] == "HTTP/1.1":
                 if self.request.headers["METHOD"] != "HEAD":
