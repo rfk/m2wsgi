@@ -74,7 +74,7 @@ class Client(object):
 
     def disconnect(self):
         """Terminate this client connection."""
-        self.connection.send(self,data)
+        self.connection.send(self,"")
 
 
 class Request(object):
