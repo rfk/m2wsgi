@@ -4,8 +4,9 @@ m2wsgi.middleware.gzip:  GZip content-encoding middleware
 =========================================================
 
 This is a GZip content-encoding WSGI middleware.  It strives hard for WSGI
-compliance (including e.g. streaming of data chunks).  Unless you tell it
-not to bother.
+compliance, even at the expense of compression.  If you want to trade off
+compliance for better compression, but an instance of BufferMiddleware inside
+it to collect small chunks and compress them all at once.
 
 """
 #  Copyright (c) 2011, Ryan Kelly.
@@ -23,48 +24,43 @@ class GZipMiddleware(object):
     """WSGI middleware for gzipping response content.
 
     Yeah yeah, don't do that, it's the province of the server.  Well, this
-    is a server and an outer-layer middleware object seems like the simlest
+    is a server and an outer-layer middleware object seems like the simplest
     way to achieve it.
 
     Unlike every other gzipping-middleware I have ever seen (except a diff
     that's languished in Django's bugzilla for 3 years) this one is capable
-    of compressing streaming responses.  It's also capable of violating the
-    WSGI spec in return for performance, if that's your thing.
+    of compressing streaming responses.
 
     Supports the following keyword arguments:
 
-        :compresslevel:      gzip compression level; default is 9
+        :compress_level:      gzip compression level; default is 9
 
         :min_compress_size:  don't bother compressing data smaller than this,
                              unless the spec requires it; default is 200 bytes
-
-        :break_wsgi_compliance:  break WSGI compliance if it means we can
-                                 compress more efficiently; default is False
 
     """
 
     def __init__(self,application,**kwds):
         self.application = application
-        self.compresslevel = kwds.pop("compresslevel",9)
+        self.compress_level = kwds.pop("compress_level",9)
         self.min_compress_size = kwds.pop("min_compress_size",200)
-        self.break_wsgi_compliance = kwds.pop("break_wsgi_compliance",False)
-        #  There are many other ways to express how you feel
-        #  about certain aspects of WSGI...
-        for prefix in ("ignore","screw","shpx".decode("rot13"),):
-            key = prefix + "_wsgi_compliance"
-            self.break_wsgi_compliance |= kwds.pop(key,False)
 
     def __call__(self,environ,start_response):
         handler = []
+        #  We can't decide how to properly handle the response until we
+        #  have the headers, which means we have to do this in the 
+        #  start_response function.  It will append a callable and
+        #  any required arguments to the 'handler' list.
         def my_start_response(status,headers,exc_info=None):
             if not self._should_gzip(environ,status,headers):
                 handler.append(self._respond_uncompressed)
                 return start_response(status,headers,exc_info)
             else:
                 gzf = gzip.GzipFile(mode="wb",fileobj=StringIO(),
-                                    compresslevel=self.compresslevel)
+                                    compresslevel=self.compress_level)
                 has_content_length = False
                 for (i,(k,v)) in enumerate(headers):
+                    #  We must stream the chunks if there's no content-length
                     if k.lower() == "content-length":
                         has_content_length = True
                     elif k.lower() == "vary":
@@ -88,8 +84,8 @@ class GZipMiddleware(object):
                 #  data until an actual chunk is yielded from the app.
                 return gzf.write
         output = iter(self.application(environ,my_start_response))
-        #  We have to read up to the first yielded chunk before branching,
-        #  to give the app a change to call start_response.
+        #  We have to read up to the first yielded chunk to give
+        #  the app a change to call start_response.
         try:
             (_,output) = ipeek(output)
         except StopIteration:
@@ -106,25 +102,16 @@ class GZipMiddleware(object):
 
         This is pretty easy, but you have to mind the WSGI requirement to
         always yield each chunk in full whenever the application yields a
-        chunk.  Unless you don't care of course...
+        chunk.  Throw in some buffering middleware to work around this.
         """
-        if self.break_wsgi_compliance:
-            for chunk in output:
-                if chunk:
-                    gzf.write(chunk)
-                    if gzf.fileobj.tell() >= self.min_compress_size:
-                        gzf.flush()
-                        yield gzf.fileobj.getvalue()
-                        gzf.fileobj = StringIO()
-        else:
-            for chunk in output:
-                if not chunk:
-                    yield chunk
-                else:
-                    gzf.write(chunk)
-                    gzf.flush()
-                    yield gzf.fileobj.getvalue()
-                    gzf.fileobj = StringIO()
+        for chunk in output:
+            if not chunk:
+                yield chunk
+            else:
+                gzf.write(chunk)
+                gzf.flush()
+                yield gzf.fileobj.getvalue()
+                gzf.fileobj = StringIO()
         gzf.close()
         yield gzf.fileobj.getvalue()
 
@@ -139,7 +126,7 @@ class GZipMiddleware(object):
         and stream the response, then let the server sort out how to terminate
         the connection.
         """
-        #  Helper function to remove an content-length headers and
+        #  Helper function to remove any content-length headers and
         #  then respond with streaming compression.
         def streamit():
             todel = []
@@ -151,15 +138,16 @@ class GZipMiddleware(object):
             sr(status,headers,exc_info)
             return self._respond_compressed_stream(output,gzf)
         #  Check if we can safely compress the whole body.
-        if not self.break_wsgi_compliance:
-            try:
-                num_chunks = len(output)
-            except Exception:
+        #  If not, stream it a chunk at a time.
+        try:
+            num_chunks = len(output)
+        except Exception:
+            return streamit()
+        else:
+            if num_chunks > 1:
                 return streamit()
-            else:
-                if num_chunks > 1:
-                    return streamit()
         #  OK, we can compress it all in one go.
+        #  Make sure to adjust content-length header.
         for chunk in output:
             gzf.write(chunk)
         gzf.close()
@@ -187,7 +175,7 @@ class GZipMiddleware(object):
             return False
         #  Check various response headers
         for (k,v) in headers:
-            #  If it's also content-encoded, must preserver
+            #  If it's already content-encoded, must preserve
             if k.lower() == "content-encoding":
                 return False
             #  If it's too small, don't bother
