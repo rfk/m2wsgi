@@ -1,7 +1,7 @@
 """
 
-m2wsgi.base:  base handler implementation for m2wsgi
-====================================================
+m2wsgi.base:  base handler classes for m2wsgi
+=============================================
 
 This module contains the basic classes for implementing the m2wsgi handler.
 If you don't explicitly select a different IO module, you'll get the
@@ -13,16 +13,17 @@ classes from in here.  We have the following classes:
     :Client:         represents a client connected to the server, to whom you
                      can send data at any time.
 
-    :Request:        represents a client request that you can asynchronously
-                     send response data to at any time.
+    :Request:        represents a client request to which you can send
+                     response data to at any time.
 
     :Handler:        a base class for implementing handlers, with nothing
                      WSGI-specific in it.
 
+    :WSGIHandler:    a handler subclass specifically running a WSGI app.
+
+
     :WSGIResponder:  a class for managing the stateful aspects of a WSGI
                      response (status line, write callback, etc).
-
-    :WSGIHandler:    a handler subclass specifically running a WSGI app.
 
 """
 #  Copyright (c) 2011, Ryan Kelly.
@@ -49,7 +50,6 @@ def monkey_patch():
     use this to monkey-patch their green classes into the interpreter.
     """
     pass
-
 
 
 class Client(object):
@@ -138,29 +138,6 @@ class Connection(object):
     identities for the send and recv sockts.  They should be UUID strings.
     If only send_ident is specified, recv_ident will default to it.  If neither
     are specified, the sockets will run without identity in non-durable mode.
-
-    If specified, the 'send_type' and 'recv_type' arguments give the type
-    of socket to use.  The defaults are zmq.PULL and zmq.PUB respectively.
-    Currently supported send socket types are:
-
-        * zmq.PULL:  The standard pull socket offered by Mongrel2.  This
-                     is very efficient but offers no way to detect handlers
-                     that have disconnected.
-
-        * zmq.XREQ:  A chattier pull socket.  Each handler explicitly sends
-                     a message to register itself with the socket, and can
-                     send a special "disconnect" message to stop receiving
-                     requests and effect a clean shutdown.  To use it, you
-                     must run the "pull2xreq" helper device to translate
-                     mongrel2's PULL socket into an XREQ socket that speaks
-                     this protocol.
-
-    Currently supported recv socket types are:
-
-        * zmq.PUB:  The standard publisher socket offered by Mongrel2.
-                    Response data is published, prefixed with the identity
-                    of the mongrel2 instance managing the request.
-
     """
 
     ZMQ_CTX = zmq.Context()
@@ -168,8 +145,7 @@ class Connection(object):
     ClientClass = Client
     RequestClass = Request
 
-    def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None,
-                      send_type=None,recv_type=None):
+    def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None):
         self.send_spec = send_spec
         if recv_spec is None:
             try:
@@ -194,109 +170,69 @@ class Connection(object):
         self.recv_type = recv_type
         self.recv_buffer = deque()
         self._has_shutdown = False
-        self.reqs = self.ZMQ_CTX.socket(self.send_type)
+        self.send_sock = self.ZMQ_CTX.socket(self.send_type)
         if self.send_ident is not None:
-            self.reqs.setsockopt(zmq.IDENTITY,self.send_ident)
-        self.reqs.connect(self.send_spec)
-        if self.send_type == zmq.XREQ:
-            self.reqs.send("",zmq.SNDMORE)
-            self.reqs.send("")
-            self._pending_heartbeat = False
-        self.resps = self.ZMQ_CTX.socket(self.recv_type)
+            self.send_sock.setsockopt(zmq.IDENTITY,self.send_ident)
+        self.send_sock.connect(self.send_spec)
+        self.recv_sock = self.ZMQ_CTX.socket(self.recv_type)
         if self.recv_ident is not None:
-            self.resps.setsockopt(zmq.IDENTITY,self.recv_ident)
-        self.resps.connect(self.recv_spec)
+            self.recv_sock.setsockopt(zmq.IDENTITY,self.recv_ident)
+        self.recv_sock.connect(self.recv_spec)
+        #  We use an anonymous pipe to interrupt blocking receives.
+        #  The recv() method polls both send_sock and intr_pipe_r.
+        (self.intr_pipe_r,self.intr_pipe_w) = os.pipe()
 
-    def recv(self,blocking=True):
+    def recv(self,timeout=None):
         """Receive a request from the send socket.
 
         This method receives a request from the send socket, parses it into
         a Request object and returns it.
  
-        You may specify the keyword argument 'blocking' to request blocking
-        (the default) or non-blocking recv.  If not blocking and no request
-        is available, None is returned.
+        You may specify the keyword argument 'timeout' to specify the max
+        number of seconds to block.  Zero means non-blocking and None means
+        blocking indefinitely.  If the timeout expires without a request
+        being available, None is returned.
         """
-        if self.send_type == zmq.PULL:
-            msg = self._recv_PULL(blocking=blocking)
-        elif self.send_type == zmq.XREQ:
-            msg = self._recv_XREQ(blocking=blocking)
+        if self.recv_buffer:
+            msg = self.recv_buffer.popleft()
         else:
-            raise ValueError("unknown send_type: %s" % (self.send_type,))
-        if msg is None:
-            return None
+            msg = self._recv(timeout=timeout)
+            if msg is None:
+                return None
+        #  Parse out the request object and return.
         (server_id,client_id,rest) = msg.split(' ', 2)
         client = self.ClientClass(self,server_id,client_id)
         return self.RequestClass.parse(client,rest)
 
-    def _recv_PULL(self,blocking=True):
-        """Receive a request via a PULL-type send socket.
+    def _recv(self,timeout=None):
+        """Internal method of receving a message.
 
-        This is the mongrel2 default, and the easiest case.  We just
-        pull a request straight off the socket.
+        This is called by the recv() method and is mainly for convienent
+        overriding in subclasses.
         """
-        if self.recv_buffer:
-            return self.recv_buffer.popleft()
-        if blocking:
-            return self.reqs.recv()
-        else:
-            try:
-                return self.reqs.recv(zmq.NOBLOCK)
-            except zmq.ZMQError, e:
-                if e.errno != zmq.EAGAIN:
-                    if not self._has_shutdown or e.errno != zmq.ENOTSUP:
-                        raise
-                return None
-
-    def _recv_XREQ(self,blocking=True,heartbeat=True):
-        """Receive a request via a XREQ-type send socket.
- 
-        This is a custom protocol that lets the handler chat with the socket
-        about its availability.  Whenever we receive an empty message from
-        the socket, we send one in reply so it knows we're still alive.
-        """
-        if self.recv_buffer:
-            return self.recv_buffer.popleft()
-        msg = ""
-        while True:
-            #  Send any required heartbeat message.
-            #  This is always blocking.
-            if self._pending_heartbeat:
-                if not blocking or not heartbeat:
-                    return None
-                self.reqs.send("",zmq.SNDMORE)
-                self.reqs.send("")
-                self._pending_heartbeat = False
-            #  Grab the next available message, either
-            #  blocking or non-blocking as requested.
-            if blocking:
-                delim = self.reqs.recv()
-                assert delim == "", "non-empty msg delimiter: "+delim
-                msg = self.reqs.recv(zmq.NOBLOCK)
-            else:
-                try:
-                    delim = self.reqs.recv(zmq.NOBLOCK)
-                    assert delim == "", "non-empty msg delimiter: "+delim
-                    msg = self.reqs.recv(zmq.NOBLOCK)
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        if not self._has_shutdown or e.errno != zmq.ENOTSUP:
-                            raise
-                    return None
-            #  If it's empty, the server wants another heartbeat.
-            #  If not, we've finally got our request.
-            if msg == "":
-                self._pending_heartbeat = True
-            else:
-                return msg
+        #  Poll send_sock for reading.
+        #  If we're blocking, also poll the interrupt pipe.
+        socks = [self.send_sock]
+        if timeout != 0:
+            socks.append(self.intr_pipe_r)
+        (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=timeout)
+        #  If we were interrupted, return None immediately
+        if self.intr_pipe_r in ready:
+            os.read(self.intr_pipe_r,1)
+            return None
+        #  We should now be able to grab one non-blockingly.
+        try:
+            msg = self.send_sock.recv(zmq.NOBLOCK)
+        except zmq.ZMQError, e:
+            if e.errno != zmq.EAGAIN:
+                if not self._has_shutdown or e.errno != zmq.ENOTSUP:
+                    raise
+            return None
 
     def _send(self,server_id,client_ids,data):
         """Internal method to send out response data."""
         msg = "%s %d:%s, %s" % (server_id,len(client_ids),client_ids,data)
-        if self.recv_type == zmq.PUB:
-            self.resps.send(msg)
-        else:
-            raise ValueError("unknown recv_type: %s" % (self.recv_type,))
+        self.recv_sock.send(msg)
 
     def send(self,client,data):
         """Send a response to the specified client."""
@@ -308,7 +244,7 @@ class Connection(object):
         This more efficient than sending to them individually as it can
         batch up the replies.
         """
-        #  Batch up the client by their server id.
+        #  Batch up the clients by their server id.
         #  If we get more than 100 to the same server, send them
         #  immediately.  The rest we send in a final iteration at the end.
         cids_by_sid = {}
@@ -325,6 +261,22 @@ class Connection(object):
         for (sid,cids) in cids_by_sid.itervalues():
             self._send(sid," ".join(cids),data)
 
+    def interrupt(self):
+        """Interrupt any blocking recv() calls on this connection.
+
+        Calling this method will cause any blocking recv() calls to be
+        interrupted and immediately return None.  You might like to call
+        this if you're trying to shut down a handler from another thread.
+        """
+        #  First make sure there are no old interrupts in the pipe.
+        socks = [self.intr_pipe_r]
+        (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=0)
+        while ready:
+            os.read(self.intr_pipe_r,1)
+            (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=0)
+        #  Now write to the intrrupt pipe to trigger it.
+        os.write(self.intr_pipe_w,"X")
+
     def shutdown(self):
         """Shut down the connection.
 
@@ -332,54 +284,31 @@ class Connection(object):
         handler, but it is willing to process any that have already been
         transmitted.  Use it for graceful termination of handlers.
 
-        After shutdown, you may only call recv() with blocking=False.
+        After shutdown, you may only call recv() with timeout=0.
+
+        For the standard PULL socket, a clean shutdown is not possible
+        as zmq has no API for it.  What we do is quickly ready anything
+        that's pending for delivery then close the socket.  This leaves
+        a slight race condition that a request will be pushed to us and
+        then lost.
         """
-        if self.send_type == zmq.PULL:
-            self._shutdown_PULL()
-        elif self.send_type == zmq.XREQ:
-            self._shutdown_XREQ()
-        else:
-            raise ValueError("unknown send_type: %s" % (self.send_type,))
+        req = self.recv(timeout=0)
+        while req is not None:
+            self.recv_buffer.append(req)
+            req = self.recv(timeout=0)
+        self.send_sock.close()
         self._has_shutdown = True
-
-    def _shutdown_PULL(self):
-        """Shutdown a PULL-type send socket.
-
-        Actually such a thing is not possible, zmq has no API for it.
-        What we do is quickly read anything that's pending for delivery
-        then close the socket.  This leaves a slight race condition that
-        a request will be pushed to us and then lost.
-        """
-        req = self._recv_PULL(blocking=False)
-        while req is not None:
-            self.recv_buffer.append(req)
-            req = self._recv_PULL(blocking=False)
-        self.reqs.close()
-
-    def _shutdown_XREQ(self):
-        """Shutdown a XREQ-type send socket.
-
-        This sends a shutdown message to the socket to disconnect any
-        pending request.  We then recv replies until the server requests
-        a new heartbeat signal, which we don't send.
-        """
-        self.reqs.send("",zmq.SNDMORE)
-        self.reqs.send("X")
-        req = self._recv_XREQ(heartbeat=False)
-        while req is not None:
-            self.recv_buffer.append(req)
-        self.reqs.close()
 
     def close(self):
         """Close the connection."""
-        self.reqs.close()
-        self.resps.close()
+        self.send_sock.close()
+        self.recv_sock.close()
 
 
 class Handler(object):
     """Mongrel2 request handler class.
 
-    Instances of Handler act as Mongrel2 handler process, dispatching
+    Instances of Handler act as a Mongrel2 handler process, dispatching
     incoming requests to their 'process_request' method.  The base class
     implementation does nothing.  See WSGIHandler for something useful.
 
@@ -392,8 +321,8 @@ class Handler(object):
     'stop' method (probably from another thread).
 
     If you want more control over the handler, e.g. to integrate it with some
-    other control loop, you can call the 'serve_one_request' to serve a 
-    single request.  Note that this will block if there is not a request
+    other control loop, you can call the 'serve_one_request' method to serve
+    a single request.  Note that this will block if there is not a request
     available - polling the underlying connection is up to you.
     """
 
@@ -438,10 +367,11 @@ class Handler(object):
                 raise exc_info,exc_value,exc_tb
 
     def _shutdown(self):
+        #  Attempt a clean disconnect from the socket.
         self.connection.shutdown()
         #  We have to handle anything that's already in our recv queue,
         #  or the requests will get lost when we close the socket.
-        req = self.connection.recv(blocking=False)
+        req = self.connection.recv(timeout=0)
         while req is not None:
             self.handle_request(req)
         self.wait_for_completion()
@@ -451,12 +381,13 @@ class Handler(object):
         """Stop the request-handling loop and close down the connection."""
         self.serving = False
         self.started = False
-        # TODO: how to interrupt blocking recv?
+        self.connection.interrupt()
     
     def serve_one_request(self):
         """Receive and serve a single request from Mongrel2."""
         req = self.connection.recv()
-        self.handle_request(req)
+        if req is not None:
+            self.handle_request(req)
 
     def handle_request(self,req):
         """Handle the given Request object.
@@ -507,7 +438,7 @@ class WSGIResponder(object):
 
         start_response:  the standard WSGI start_response callable
         write:           send response data; doubles as the WSGI write callback
-        flush:           finalize the response, e.g. close the connection
+        finish           finalize the response, e.g. close the connection
         
     """
 
@@ -553,7 +484,7 @@ class WSGIResponder(object):
         else:
             self._write(data)
 
-    def flush(self):
+    def finish(self):
         """Finalise the response.
 
         This method finalises the sending of the response, which may include
@@ -587,6 +518,8 @@ class WSGIResponder(object):
             self._write("\r\n")
             if k.lower() == "content-length":
                 has_content_length = True
+            elif k.lower() == "date":
+                has_date = True
         if not has_date:
             self._write("Date: ")
             self._write(rfc822_format_date())
@@ -734,7 +667,7 @@ class WSGIHandler(Handler):
                 for chunk in chunks:
                     if chunk:
                         responder.write(chunk)
-                responder.flush()
+                responder.finish()
             finally:
                 if hasattr(chunks,"close"):
                     chunks.close()
@@ -748,7 +681,7 @@ class WSGIHandler(Handler):
             if not responder.has_started:
                 responder.start_response("500 Server Error",[],sys.exc_info())
                 responder.write("server error")
-                responder.flush()
+                responder.finish()
             req.disconnect()
         finally:
             #  Make sure that the upload file is cleaned up.
@@ -802,7 +735,7 @@ class WSGIHandler(Handler):
             if not k.islower() or "." in k:
                 continue
             #  The list-like headers are helpfully already lists.
-            #  Sadly, we have to put them back into strings.
+            #  Sadly, we have to put them back into strings for WSGI.
             if isinstance(v,list):
                 if k in self.COMMA_SEPARATED_HEADERS:
                     v = ", ".join(v)
@@ -845,6 +778,7 @@ class WSGIHandler(Handler):
 def test_application(environ,start_response):
     start_response("200 OK",[("Content-Length","3")])
     yield "OK\n"
+
 
 if __name__ == "__main__":
     s = WSGIHandler(test_application,"tcp://127.0.0.1:9999")

@@ -19,7 +19,8 @@ v0.4.0
     * don't force monkey-patching for gevent backend.
     * added some utility middleware for use by the server:
         * GZipMiddleware:  gzip response bodies
-        * BufferMiddleware:  buffer response bodied, for betting compression
+        * BufferMiddleware:  buffer response bodies, for betting compression
+
 
 v0.3.0
 
@@ -35,12 +36,14 @@ v0.3.0
     * Add experimental gevent IO module
     * Install command-line script "m2wsgi".
 
+
 v0.2.0
 
     * Transparent support for streaming reads of large request bodies.
     * Support for a REQ-based handler protocol as an alternative to
       mongrel2's standard PULL-based protocol.  See m2wsgi/pull2qeue.py.
     * And of course, many bugfixes and WSGI compatability improvements.
+
 
 v0.1.0
 
