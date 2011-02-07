@@ -25,9 +25,9 @@ from m2wsgi import base
 
 import eventlet.hubs
 from eventlet.green import zmq, time
-from eventlet.green import threading as greenthreading
+from eventlet.timeout import Timeout
+from eventlet.event import Event
 from eventlet.hubs import use_hub
-from eventlet import tpool
 eventlet.hubs.use_hub("zeromq")
 
 #  Older eventlet versions have buggy support for non-blocking zmq requests:
@@ -98,12 +98,66 @@ def monkey_patch():
 
 
 class Connection(base.Connection):
+    __doc__ = base.Connection.__doc__ + """
+    This Connection subclass is designed for use with eventlet.  It uses the
+    monkey-patched zmq module from eventlet and spawns a number of greenthreads
+    to manage non-blocking IO and interrupts.
+    """
     #  Use green version of zmq module.
     ZMQ_CTX = zmq.Context()
 
+    #  Since zmq.core.poll doesn't play nice with eventlet, we use a
+    #  greenthread to implement interrupts.  Each call to _recv() spawns 
+    #  a new greenthread and waits on it; calls to interrupt() kill the
+    #  pending recv threads.
+    def _more_init(self):
+        self.recv_threads = []
+
+    class _Interrupted(Exception):
+        """Exception raised when a recv() is interrupted."""
+        pass
+
+    def _recv(self,timeout=None):
+        rt = eventlet.spawn(self._do_recv,timeout=timeout)
+        return rt.wait()
+        self.recv_threads.append(rt)
+        try:
+            return rt.wait()
+        except self._Interrupted:
+            return None
+        finally:
+            self.recv_threads.remove(rt)
+
+    def _do_recv(self,timeout=None):
+        try:
+            if timeout is None:
+                return self.send_sock.recv()
+            elif timeout != 0:
+                with Timeout(timeout,False):
+                    return self.send_sock.recv()
+            else:
+                return self.send_sock.recv(zmq.NOBLOCK)
+        except zmq.ZMQError, e:
+            if e.errno != zmq.EAGAIN:
+                if not self._has_shutdown:
+                    raise
+                if e.errno not in (zmq.ENOTSUP,zmq.EFAULT,):
+                    raise
+            return None
+
+    def interrupt(self):
+        for rt in self.recv_threads:
+            rt.kill(self._Interrupted)
+
+    def _close(self):
+        pass
+
 
 class StreamingUploadFile(base.StreamingUploadFile):
-    #  Use green version of time module.
+    __doc__ = base.StreamingUploadFile.__doc__ + """
+    This StreamingUploadFile subclass is designed for use with eventlet.  It
+    uses the monkey-patched time module from eventlet when sleeping.
+    """
     def _wait_for_data(self):
         curpos = self.fileobj.tell()
         cursize = os.fstat(self.fileobj.fileno()).st_size
@@ -122,12 +176,12 @@ class Handler(base.Handler):
     def __init__(self,*args,**kwds):
         super(Handler,self).__init__(*args,**kwds)
         self._num_inflight_requests = 0
-        self._all_requests_complete = greenthreading.Event()
+        self._all_requests_complete = None
 
     def handle_request(self,req):
         self._num_inflight_requests += 1
-        if self._num_inflight_requests >= 1:
-            self._all_requests_complete.clear()
+        if self._num_inflight_requests == 1:
+            self._all_requests_complete = Event()
         @eventlet.spawn_n
         def do_handle_request():
             try:
@@ -135,7 +189,8 @@ class Handler(base.Handler):
             finally:
                 self._num_inflight_requests -= 1
                 if self._num_inflight_requests == 0:
-                    self._all_requests_complete.set()
+                    self._all_requests_complete.send()
+                    self._all_requests_complete = None
 
     def wait_for_completion(self):
         if self._num_inflight_requests > 0:

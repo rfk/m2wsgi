@@ -42,12 +42,64 @@ def monkey_patch():
 
 
 class Connection(base.Connection):
+    __doc__ = base.Handler.__doc__ + """
+    This Connection subclass is designed for use with gevent.  It uses the
+    monkey-patched zmq module from gevent and spawns a number of greenthreads
+    to manage non-blocking IO and interrupts.
+    """
     #  Use green version of zmq module.
     ZMQ_CTX = zmq.Context()
 
+    #  Since zmq.core.poll doesn't play nice with gevent, we use a
+    #  greenthread to implement interrupts.  Each call to _recv() spawns 
+    #  a new greenthread and waits on it; calls to interrupt() kill the
+    #  pending recv threads.
+    def _more_init(self):
+        self.recv_threads = []
+
+    class _Interrupted(Exception):
+        """Exception raised when a recv() is interrupted."""
+        pass
+
+    def _recv(self,timeout=None):
+        rt = gevent.spawn(self._do_recv,timeout=timeout)
+        self.recv_threads.append(rt)
+        try:
+            return rt.get()
+        except self._Interrupted:
+            return None
+        finally:
+            self.recv_threads.remove(rt)
+
+    def _do_recv(self,timeout=None):
+        if timeout is None:
+            return self.send_sock.recv()
+        elif timeout != 0:
+            with gevent.Timeout(timeout,False):
+                return self.send_sock.recv()
+        else:
+            try:
+                return self.send_sock.recv(zmq.NOBLOCK)
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    if not self._has_shutdown or e.errno != zmq.ENOTSUP:
+                        raise
+                return None
+
+    def interrupt(self):
+        for rt in self.recv_threads:
+            rt.kill(self._Interrupted)
+
+    def _close(self):
+        pass
+
+
 
 class StreamingUploadFile(base.StreamingUploadFile):
-    #  Use green sleep function.
+    __doc__ = base.StreamingUploadFile.__doc__ + """
+    This StreamingUploadFile subclass is designed for use with gevent.  It
+    uses uses gevent.sleep() instead of time.sleep().
+    """
     def _wait_for_data(self):
         curpos = self.fileobj.tell()
         cursize = os.fstat(self.fileobj.fileno()).st_size

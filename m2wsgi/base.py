@@ -155,29 +155,23 @@ class Connection(object):
                 msg = "cannot guess recv_spec from send_spec %r" % (send_spec,)
                 raise ValueError(msg)
             recv_spec = send_host + ":" + str(send_port - 1)
-        if send_type is None:
-            send_type = zmq.PULL
-        elif isinstance(send_type,basestring):
-            send_type = getattr(zmq,send_type)
-        if recv_type is None:
-            recv_type = zmq.PUB
-        elif isinstance(recv_type,basestring):
-            recv_type = getattr(zmq,recv_type)
         self.recv_spec = recv_spec
         self.send_ident = send_ident
         self.recv_ident = recv_ident or send_ident
-        self.send_type = send_type
-        self.recv_type = recv_type
         self.recv_buffer = deque()
         self._has_shutdown = False
-        self.send_sock = self.ZMQ_CTX.socket(self.send_type)
+        self.send_sock = self.ZMQ_CTX.socket(zmq.PULL)
         if self.send_ident is not None:
             self.send_sock.setsockopt(zmq.IDENTITY,self.send_ident)
         self.send_sock.connect(self.send_spec)
-        self.recv_sock = self.ZMQ_CTX.socket(self.recv_type)
+        self.recv_sock = self.ZMQ_CTX.socket(zmq.PUB)
         if self.recv_ident is not None:
             self.recv_sock.setsockopt(zmq.IDENTITY,self.recv_ident)
         self.recv_sock.connect(self.recv_spec)
+        self._more_init()
+
+    def _more_init(self):
+        """Hook for subclass-specific initialisation code."""
         #  We use an anonymous pipe to interrupt blocking receives.
         #  The recv() method polls both send_sock and intr_pipe_r.
         (self.intr_pipe_r,self.intr_pipe_w) = os.pipe()
@@ -218,11 +212,12 @@ class Connection(object):
         (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=timeout)
         #  If we were interrupted, return None immediately
         if self.intr_pipe_r in ready:
+            print "INTERRUPTED"
             os.read(self.intr_pipe_r,1)
             return None
         #  We should now be able to grab one non-blockingly.
         try:
-            msg = self.send_sock.recv(zmq.NOBLOCK)
+            return self.send_sock.recv(zmq.NOBLOCK)
         except zmq.ZMQError, e:
             if e.errno != zmq.EAGAIN:
                 if not self._has_shutdown or e.errno != zmq.ENOTSUP:
@@ -268,6 +263,8 @@ class Connection(object):
         interrupted and immediately return None.  You might like to call
         this if you're trying to shut down a handler from another thread.
         """
+        if self._has_shutdown:
+            return
         #  First make sure there are no old interrupts in the pipe.
         socks = [self.intr_pipe_r]
         (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=0)
@@ -303,6 +300,14 @@ class Connection(object):
         """Close the connection."""
         self.send_sock.close()
         self.recv_sock.close()
+        self._has_shutdown = True
+        self._close()
+
+    def _close(self):
+        os.close(self.intr_pipe_r)
+        self.intr_pipe_r = None
+        os.close(self.intr_pipe_w)
+        self.intr_pipe_w = None
 
 
 class Handler(object):
@@ -383,11 +388,12 @@ class Handler(object):
         self.started = False
         self.connection.interrupt()
     
-    def serve_one_request(self):
+    def serve_one_request(self,timeout=None):
         """Receive and serve a single request from Mongrel2."""
-        req = self.connection.recv()
+        req = self.connection.recv(timeout=timeout)
         if req is not None:
             self.handle_request(req)
+        return req
 
     def handle_request(self,req):
         """Handle the given Request object.

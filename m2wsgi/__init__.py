@@ -116,21 +116,10 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
-    * If the pull2xreq device dies, then any connected handlers will hang
-      forever waiting for it to send them work.  I think I'm going to have
-      to throw it away and try again with all the lessons learned.
-
-    * When running multiple threads, ctrl-C doesn't cleanly exit the process.
-      Seems like the background threads get stuck in a blocking recv().
-      I *really* don't want to emulate interrupts using zmq_poll...
-
-    * Likewise for the gevent backend; ctrl-C doesn't cleanly exit the
-      process, at least not reliably.
-
     * The zmq load-balancing algorithm is greedy round-robin, which isn't
       ideal.  For example, it can schedule several fast requests to the same
       thread as a slow one, making them wait even if other threads become
-      available.  I'm working on a zmq adapter that can do something better...
+      available.  I'm working on a zmq device that can do something better...
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
@@ -177,10 +166,6 @@ def main(argv=None):
                   help="the send socket identity to use")
     op.add_option("","--recv-ident",type="str",default=None,
                   help="the recv socket identity to use")
-    op.add_option("","--send-type",type="str",default=None,
-                  help="the send socket type to use")
-    op.add_option("","--recv-type",type="str",default=None,
-                  help="the recv socket type to use")
     (opts,args) = op.parse_args(argv)
     #  Sanity-check the arguments.
     if len(args) < 1:
@@ -200,14 +185,10 @@ def main(argv=None):
             msg = "Using --num-threads with --recv-ident will crash"
             msg += " the mongrel2 server. Seriously.  Don't do that."
             raise ValueError(msg)
-    #  Grab the application, connection and handler class
-    app = load_dotted_name(args[0])
-    assert callable(app), "the specified app is not callable"
+    #  Grab the connection and handler class
     conn_args = args[1:]
     conn_kwds = dict(send_ident=opts.send_ident,
-                     recv_ident=opts.recv_ident,
-                     send_type=opts.send_type,
-                     recv_type=opts.recv_type)
+                     recv_ident=opts.recv_ident,)
     try:
         iomod = "%s.%s" % (__name__,opts.io,)
         iomod = __import__(iomod,fromlist=["WSGIHandler"])
@@ -215,6 +196,11 @@ def main(argv=None):
         raise
         raise ValueError("not a m2wsgi IO module: %r" % (opts.io,))
     iomod.monkey_patch()
+    #  Now that things are monkey-patched, we can load the app
+    #  and the threading module.
+    import threading
+    app = load_dotted_name(args[0])
+    assert callable(app), "the specified app is not callable"
     #  Try to clean up properly when killed.
     #  We turn SIGTERM into a KeyboardInterrupt exception.
     if signal is not None:
@@ -223,8 +209,6 @@ def main(argv=None):
         signal.signal(signal.SIGTERM,lambda *a: interrupt)
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
-    #  Delay import of threading to allow for iomod monkey-patching.
-    import threading
     handlers = []
     threads = []
     def run_handler():
