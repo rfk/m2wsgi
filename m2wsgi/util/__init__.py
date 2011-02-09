@@ -15,6 +15,7 @@ import sys
 import os
 import re
 from urllib import unquote
+from collections import deque
 
 
 def fix_absolute_import(filename):
@@ -235,5 +236,78 @@ class InputStream(object):
     def readlines(self,sizehint=-1):
         """Return a list of all lines in the file."""
         return [ln for ln in self]
+
+
+class CheckableQueue(object):
+    """A combined deque/set for O(1) queueing and membership checking.
+
+    This class maintains both a deque and a set and provides the following
+    operations in O(1) time:
+
+        * membership testing
+        * append-to-back
+        * pop-from-front
+        * item removal
+
+    The only tricky one is item removal - for this to work in constant time
+    the items must be removed from the set but left in the deque.  To prevent
+    duplicates appearing in the deque if a removed item is re-inserted, we
+    maintain a count of how often an item has been removed and suppress
+    removed items when they show up at the front of the queue.
+    """
+
+    def __init__(self):
+        self.__members = set()
+        self.__removed_count = {}
+        self.__queue = deque()
+
+    def __contains__(self,item):
+        return (item in self.__members)
+
+    def __len__(self):
+        #  NOT len(self.__queue) as it may contain duplicates.
+        return len(self.__members)
+
+    def __iter__(self):
+        return iter(self.__members)
+
+    def clear(self):
+        self.__members.clear()
+        self.__queue.clear()
+        self.__removed.clear()
+
+    def append(self,item):
+        if item not in self.__members:
+            self.__members.add(item)
+            self.__queue.append(item)
+
+    def popleft(self):
+        #  Since items remain in the queue after removal, we
+        #  must loop to find one that's still "alive".
+        while True:
+            item = self.__queue.popleft()
+            rc = self.__removed_count.get(item,0)
+            if not rc:
+                #  The item is alive; return it.
+                self.__members.remove(item)
+                return item
+            else:
+                #  The item was removed; suppress it.
+                rc -= 1
+                if rc:
+                    self.__removed_count[item] = rc
+                else:
+                    del self.__removed_count[item]
+
+    def remove(self,item):
+        try:
+            self.__members.remove(item)
+        except KeyError:
+            raise ValueError(item)
+        if item in self.__removed_count:
+            self.__removed_count[item] += 1
+        else:
+            self.__removed_count[item] = 1
+
 
 

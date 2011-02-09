@@ -1,25 +1,27 @@
 
 v0.4.0
 
-    * Some API refactorings and cleanups:
+    * A HUGE suite of API refactorings.
+      Too sweeping to report in detail, but the highlights are:
+        * abstract base classes now defined in m2wsgi.io.base, with concrete
+          implementations in m2wsgi.io.raw, m2wsgi.io.eventlet, etc.
         * new class "Client" represents a client connection to which you can
           send data; basically a (server id,conection id) tuple.
         * new class "Handler" is a base class for handlers, with nothing
           WSGI-specific.  Maybe useful for writing custom handlers.
-        * changed Request class:
-            * constructor now takes a Client object rather than the
-              combination of Connection, server id and client id.
-            * renamed Request.kill => Request.disconnect
-        * changed Connection class:
-            * send() now takes a Client object rather than a (target,cid) pair.
-        * changed WSGIHandler class:
-            * handle_request method split into "handle_request" for creating
-              threads and other management tasks, and "process_request" for
-              doing the actual work.
-    * don't force monkey-patching for gevent backend.
+        * different types of Connection now live in different classes, rather
+          than a single class with various socket-type switches.
+            * see m2wsgi.io.base.DispatcherConnection for an example.
+    * Socket identities are now specified as part of a single socket-spec
+      string, with a URL-like format, e.g:  tcp://IDENTITY@host:port
+    * New "dispatcher" device replaces the old pull2xreq device:
+        * capable of flexible request routing
+        * demo class using consistent hashing is available
+        * sends explicit pings to detect dead handler processes
+    * New "response" device gives out easy canned responses.
     * added some utility middleware for use by the server:
         * GZipMiddleware:  gzip response bodies
-        * BufferMiddleware:  buffer response bodies, for betting compression
+        * BufferMiddleware:  buffer response bodies, for better compression
 
 
 v0.3.0

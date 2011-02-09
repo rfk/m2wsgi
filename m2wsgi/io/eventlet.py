@@ -1,7 +1,7 @@
 """
 
-m2wsgi.eventlet:  eventlet-based I/O module for m2wsgi
-======================================================
+m2wsgi.io.eventlet:  eventlet-based I/O module for m2wsgi
+=========================================================
 
 
 This module provides subclasses of m2wsgi.WSGIHandler and related classes
@@ -20,8 +20,9 @@ from __future__ import absolute_import
 from m2wsgi.util import fix_absolute_import
 fix_absolute_import(__file__)
 
+from m2wsgi.io import base
 
-from m2wsgi import base
+import zmq.core.poll as zmq_poll
 
 import eventlet.hubs
 from eventlet.green import zmq, time
@@ -29,6 +30,7 @@ from eventlet.timeout import Timeout
 from eventlet.event import Event
 from eventlet.hubs import use_hub
 eventlet.hubs.use_hub("zeromq")
+
 
 #  Older eventlet versions have buggy support for non-blocking zmq requests:
 #
@@ -97,60 +99,84 @@ def monkey_patch():
     eventlet.monkey_patch()
 
 
-class Connection(base.Connection):
-    __doc__ = base.Connection.__doc__ + """
-    This Connection subclass is designed for use with eventlet.  It uses the
-    monkey-patched zmq module from eventlet and spawns a number of greenthreads
-    to manage non-blocking IO and interrupts.
+class Client(base.Client):
+    __doc__ = base.Client.__doc__
+
+
+class Request(base.Client):
+    __doc__ = base.Client.__doc__
+
+
+class ConnectionBase(base.ConnectionBase):
+    __doc__ = base.ConnectionBase.__doc__ + """
+    This ConnectionBase subclass is designed for use with eventlet.  It uses
+    the monkey-patched zmq module from eventlet and spawns a number of
+    greenthreads to manage non-blocking IO and interrupts.
     """
-    #  Use green version of zmq module.
     ZMQ_CTX = zmq.Context()
 
     #  Since zmq.core.poll doesn't play nice with eventlet, we use a
-    #  greenthread to implement interrupts.  Each call to _recv() spawns 
-    #  a new greenthread and waits on it; calls to interrupt() kill the
-    #  pending recv threads.
-    def _more_init(self):
-        self.recv_threads = []
+    #  greenthread to implement interrupts.  Each call to _poll() spawns 
+    #  a new greenthread for each socket and waits on them; calls to
+    #  interrupt() kill the pending threads.
+    def __init__(self):
+        super(ConnectionBase,self).__init__()
+        self.poll_threads = []
 
-    class _Interrupted(Exception):
-        """Exception raised when a recv() is interrupted."""
-        pass
-
-    def _recv(self,timeout=None):
-        rt = eventlet.spawn(self._do_recv,timeout=timeout)
-        return rt.wait()
-        self.recv_threads.append(rt)
+    def _poll(self,sockets,timeout=None):
+        #  Don't bother trampolining if there's data available immediately.
+        #  This also avoids calling into eventlet hub with a timeout of
+        #  zero, which doesn't work right (it still switches the greenthread)
+        (r,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
+        if r:
+            return r
+        if timeout == 0:
+            return []
+        #  Looks like we'll have to block :-(
+        ready = []
+        threads = []
+        res = Event()
+        for sock in sockets:
+            threads.append(eventlet.spawn(self._do_poll,sock,ready,res,timeout))
+        self.poll_threads.append((res,threads))
         try:
-            return rt.wait()
-        except self._Interrupted:
-            return None
+            res.wait()
         finally:
-            self.recv_threads.remove(rt)
+            self.poll_threads.remove((res,threads))
+        for t in threads:
+            t.kill()
+        return ready
 
-    def _do_recv(self,timeout=None):
+    def _do_poll(self,sock,ready,res,timeout):
         try:
-            if timeout is None:
-                return self.send_sock.recv()
-            elif timeout != 0:
-                with Timeout(timeout,False):
-                    return self.send_sock.recv()
-            else:
-                return self.send_sock.recv(zmq.NOBLOCK)
-        except zmq.ZMQError, e:
-            if e.errno != zmq.EAGAIN:
-                if not self._has_shutdown:
-                    raise
-                if e.errno not in (zmq.ENOTSUP,zmq.EFAULT,):
-                    raise
-            return None
+            zmq.trampoline(sock,read=True,timeout=timeout)
+        except Timeout:
+            pass
+        else:
+            ready.append(sock)
+            res.send()
 
-    def interrupt(self):
-        for rt in self.recv_threads:
-            rt.kill(self._Interrupted)
+    def _interrupt(self):
+        for (res,threads) in self.poll_threads:
+            res.send()
+            for t in threads:
+                t.kill()
 
-    def _close(self):
-        pass
+
+class Connection(base.Connection,ConnectionBase):
+    __doc__ = base.Connection.__doc__ + """
+    This Connection subclass is designed for use with eventlet.  It uses
+    the monkey-patched zmq module from eventlet and spawns a number of
+    green threads to manage non-blocking IO and interrupts.
+    """
+
+
+class DispatcherConnection(base.DispatcherConnection,ConnectionBase):
+    __doc__ = base.DispatcherConnection.__doc__ + """
+    This DispatcherConnection subclass is designed for use with eventlet.  It
+    uses the monkey-patched zmq module from eventlet and spawns a number of
+    green threads to manage non-blocking IO and interrupts.
+    """
 
 
 class StreamingUploadFile(base.StreamingUploadFile):
@@ -197,19 +223,15 @@ class Handler(base.Handler):
             self._all_requests_complete.wait()
 
 
+class WSGIResponder(base.WSGIResponder):
+    __doc__ = base.WSGIResponder.__doc__
+
+
 class WSGIHandler(base.WSGIHandler,Handler):
     __doc__ = base.WSGIHandler.__doc__ + """
     This WSGIHandler subclass is designed for use with eventlet.  It spawns a
     a new green thread to handle each incoming request.
     """
+    ResponderClass = WSGIResponder
     StreamingUploadClass = StreamingUploadFile
-
-
-if __name__ == "__main__":
-    def application(environ,start_response):
-        start_response("200 OK",[("Content-Length","11")])
-        yield "hello world"
-    s = WSGIHandler(application,"tcp://127.0.0.1:9999")
-    s.serve()
-
 

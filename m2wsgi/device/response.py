@@ -36,7 +36,7 @@ Some things to note:
 import sys
 import traceback
 
-from m2wsgi.base import Connection
+from m2wsgi.io.standard import Connection
 
 
 def response(conn,code=200,status="OK",headers={},body=""):
@@ -78,11 +78,6 @@ if __name__ == "__main__":
             --header-K=V    a key/value header pair to send
             --body=BODY     the response body to send
 
-            --send-ident    the send socket identity to use
-            --send-type     the send socket type to use
-            --recv-ident    the recv socket identity to use
-            --recv-type     the recv socket type to use
-
         """))
     kwds = {}
     conn_kwds = {}
@@ -100,14 +95,6 @@ if __name__ == "__main__":
             kwds.setdefault("headers",{})[k] = v
         elif arg.startswith("--body="):
             kwds["body"] = arg.split("=",1)[1]
-        elif arg.startswith("--send-ident="):
-            conn_kwds["send_ident"] = arg.split("=",1)[1]
-        elif arg.startswith("--send-type="):
-            conn_kwds["send_type"] = arg.split("=",1)[1]
-        elif arg.startswith("--recv-ident="):
-            conn_kwds["recv_ident"] = arg.split("=",1)[1]
-        elif arg.startswith("--recv-type="):
-            conn_kwds["recv_type"] = arg.split("=",1)[1]
         else:
             raise ValueError("unknown argument: %r" % (arg,))
         i += 1
@@ -116,6 +103,6 @@ if __name__ == "__main__":
         raise ValueError("response expects at least one argument")
     if len(args) > 2:
         raise ValueError("response expects at most two argument")
-    conn = Connection(*args,**conn_kwds)
+    conn = Connection(*args)
     response(conn,**kwds)
 

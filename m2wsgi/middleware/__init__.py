@@ -11,3 +11,7 @@ you're the actual server.
 #  Copyright (c) 2011, Ryan Kelly.
 #  All rights reserved; available under the terms of the MIT License.
 
+
+from m2wsgi.middleware.gzip import GZipMiddleware
+from m2wsgi.middleware.buffer import BufferMiddleware
+

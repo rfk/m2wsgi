@@ -13,7 +13,6 @@ You might also find its supporting classes useful for developing non-WSGI
 handlers in python.
 
 
-
 Command-line usage
 ------------------
 
@@ -37,6 +36,25 @@ you can use eventlet to shuffle the bits around like so::
 You can also use --io=gevent if that's how you roll.  Contributions for
 other async backends are most welcome.
 
+If you need to add fancy features to the server, you can specify additional
+WSGI middleware that should be applied around the application.  For example,
+m2wsgi provides a gzip-encoding middleware that can be used to compress
+response data::
+
+    m2wsgi --middleware=GZipMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+If you want additional compression at the expense of WSGI compliance, you
+can also do some in-server buffering before the gzipping is applied:
+
+    m2wsgi --middleware=GZipMiddleware
+           --middleware=BufferMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+The default module for loading middleware is m2wsgi.middleware; specify a
+full dotted name to load a middleware class from another module.
+
+
 
 Programmatic Usage
 ------------------
@@ -45,7 +63,7 @@ If you have more complicated needs, you can use m2wsgi from within your
 application.  The main class is 'WSGIHandler' which provides a simple
 server interface.  The equivalent of the above command-line usage is::
 
-    from m2wsgi.base import WSGIHandler
+    from m2wsgi.io.standard import WSGIHandler
     handler = WSGIHandler(my_wsgi_app,"tcp://127.0.0.1:9999")
     handler.serve()
 
@@ -54,12 +72,12 @@ that the Mongrel2 recv socket is on the next port down from the send socket,
 and that it's OK to connect the socket without a persistent identity.
 
 For finer control over the connection between your handler and Mongrel2,
-create your own Connection object::
+create your own Connection object.  Here we use 127.0.0.1:9999 as the send
+socket with identity AA-BB-CC, and use 127.0.0.2:9992 as the recv socket::
 
-    from m2wsgi.base import WSGIHandler, Connection
-    conn = Connection(send_spec="tcp://127.0.0.1:9999",
-                      recv_spec="tcp://127.0.0.1:9992",
-                      send_ident="9a5eee79-dbd5-4f33-8fd0-69b304c6035a")
+    from m2wsgi.io.standard import WSGIHandler, Connection
+    conn = Connection(send_sock="tcp://AA-BB-CC@127.0.0.1:9999",
+                      recv_sock="tcp://127.0.0.1:9992")
     handler = WSGIHandler(my_wsgi_app,conn)
     handler.serve()
 
@@ -77,6 +95,22 @@ classes useful:
 
     :Handler:     a base class for implementing handlers, with nothing
                   WSGI-specific in it.
+
+
+Devices
+-------
+
+
+This module also provides a number of pre-built "devices" - stand-alone
+executables designed to perform a specific common task.  Currently availble
+devices are:
+
+    :dispatcher:    implements a more flexible request-routing scheme than
+                    the standard mongrel2 PUSH socket.
+
+    :response:    implements a simple canned response, with ability to
+                  interpolate variables from the request.
+
 
 
 Don't we already have one of these?
@@ -116,10 +150,7 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
-    * The zmq load-balancing algorithm is greedy round-robin, which isn't
-      ideal.  For example, it can schedule several fast requests to the same
-      thread as a slow one, making them wait even if other threads become
-      available.  I'm working on a zmq device that can do something better...
+    * Need to document use of devices, esp the dispatcher.
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
@@ -158,49 +189,47 @@ def main(argv=None):
     op = optparse.OptionParser(usage=dedent("""
     usage:  m2wsgi [options] dotted.app.name spend_spec [recv_spec]
     """))
-    op.add_option("","--io",default="base",
+    op.add_option("","--io",default="standard",
                   help="the I/O module to use")
     op.add_option("","--num-threads",type="int",default=1,
                   help="the number of threads to use")
-    op.add_option("","--send-ident",type="str",default=None,
-                  help="the send socket identity to use")
-    op.add_option("","--recv-ident",type="str",default=None,
-                  help="the recv socket identity to use")
+    op.add_option("","--conn-type",default="",
+                  help="the type of connection to use")
+    op.add_option("","--middleware",action="append",
+                  help="any middleware to apply to the wsgi app")
     (opts,args) = op.parse_args(argv)
     #  Sanity-check the arguments.
     if len(args) < 1:
         raise ValueError("you must specify the WSGI application")
-    if len(args) < 2:
-        raise ValueError("you must specify the mongrel2 request socket")
-    if len(args) > 3:
-        raise ValueError("too many arguments")
     if opts.num_threads <= 0:
         raise ValueError("--num-threads must be positive")
-    if opts.num_threads > 1:
-        if opts.send_ident is not None:
-            msg = "Using --num-threads with --send-ident will crash"
-            msg += " the mongrel2 server. Seriously.  Don't do that."
-            raise ValueError(msg)
-        if opts.recv_ident is not None:
-            msg = "Using --num-threads with --recv-ident will crash"
-            msg += " the mongrel2 server. Seriously.  Don't do that."
-            raise ValueError(msg)
-    #  Grab the connection and handler class
+    #  Grab the connection and handler class from the IO module
     conn_args = args[1:]
-    conn_kwds = dict(send_ident=opts.send_ident,
-                     recv_ident=opts.recv_ident,)
-    try:
-        iomod = "%s.%s" % (__name__,opts.io,)
-        iomod = __import__(iomod,fromlist=["WSGIHandler"])
-    except (ImportError,AttributeError,):
-        raise
-        raise ValueError("not a m2wsgi IO module: %r" % (opts.io,))
+    iomod = "%s.io.%s" % (__name__,opts.io,)
+    iomod = __import__(iomod,fromlist=["WSGIHandler"])
     iomod.monkey_patch()
+    WSGIHandler = iomod.WSGIHandler
+    if not opts.conn_type:
+        Connection = iomod.Connection
+    else:
+        for nm in dir(iomod):
+            if nm.lower() == opts.conn_type.lower() + "connection":
+                Connection = getattr(iomod,nm)
+                break
+        else:
+            raise ValueError("unknown connection type: %s" % (opts.conn_type,))
     #  Now that things are monkey-patched, we can load the app
     #  and the threading module.
     import threading
     app = load_dotted_name(args[0])
     assert callable(app), "the specified app is not callable"
+    #  Apply any middleware that was specified in the args
+    if opts.middleware:
+       for mname in reversed(opts.middleware):
+           if "." not in mname:
+               mname = "m2wsgi.middleware." + mname
+           mcls = load_dotted_name(mname)
+           app = mcls(app)
     #  Try to clean up properly when killed.
     #  We turn SIGTERM into a KeyboardInterrupt exception.
     if signal is not None:
@@ -212,8 +241,8 @@ def main(argv=None):
     handlers = []
     threads = []
     def run_handler():
-        conn = iomod.WSGIHandler.ConnectionClass(*conn_args,**conn_kwds)
-        handler = iomod.WSGIHandler(app,conn)
+        conn = Connection(*conn_args)
+        handler = WSGIHandler(app,conn)
         handlers.append(handler)
         handler.serve()
     for i in xrange(opts.num_threads - 1):

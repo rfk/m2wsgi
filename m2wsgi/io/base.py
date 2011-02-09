@@ -1,11 +1,11 @@
 """
 
-m2wsgi.base:  base handler classes for m2wsgi
-=============================================
+m2wsgi.bio.base:  abstract base I/O classes for m2wsgi
+======================================================
 
-This module contains the basic classes for implementing the m2wsgi handler.
-If you don't explicitly select a different IO module, you'll get the
-classes from in here.  We have the following classes:
+This module contains the base implementations of various m2wsgi classes.
+Many of them are abstract, so don't use this module directly.
+We have the following classes:
 
     :Connection:     represents the connection from your handler to Mongrel2,
                      through which you can read requests and send responses.
@@ -31,6 +31,7 @@ classes from in here.  We have the following classes:
 
 import os
 import sys
+import re
 import json
 import time
 import traceback
@@ -41,15 +42,6 @@ from email.utils import formatdate as rfc822_format_date
 import zmq
 
 from m2wsgi.util import pop_netstring, unquote_path, unquote, InputStream
-
-
-def monkey_patch():
-    """Hook to monkey-patch the interpreter for this IO module.
-
-    Obviously the base verion does nothing.  The gevent and eventlet modules
-    use this to monkey-patch their green classes into the interpreter.
-    """
-    pass
 
 
 class Client(object):
@@ -117,27 +109,89 @@ class Request(object):
     def disconnect(self):
         """Terminate the connection associated with this request."""
         self.client.disconnect()
+
+
+class SocketSpec(object):
+    """A specification for creating a socket.
+
+    Instances of this class represent the information needed when specifying
+    a socket, which may include:
+
+        * socket address (zmq transport protocol and endpoint)
+        * socket identity
+        * whether to bind() or connect()
+
+    To allow easy use in command-line applications, each SocketSpec has a
+    canonical representation as a string in the following format::
+
+        [protocol]://[identity]@[endpoint]#[connect or bind]
+
+    For example, an anonymous socket binding to tcp 127.0.0.1 on port 999
+    would be specified like this:
+
+        tcp://127.0.0.1:999#bind
+
+    While an ipc socket with identity "RILEY" connecting to path /my/sock
+    would be specified like this:
+
+        ipc://RILEY@/my/sock#connect
+
+    Note that we don't use urlparse for this because it's got its own ideas
+    about what protocols support for features of a URL, and they don't agree
+    with our needs.
+    """
+
+    SPEC_RE = re.compile("""^
+                            (?P<protocol>[a-zA-Z]+)
+                            ://
+                            ((?P<identity>[^@]*)@)?
+                            (?P<endpoint>[^\#]+)
+                            (\#(?P<mode>[a-zA-Z]*))?
+                            $
+                         """,re.X)
+
+    def __init__(self,address,identity=None,bind=False):
+        self.address = address
+        self.identity = identity
+        self.bind = bind
+
+    @classmethod
+    def parse(cls,str):
+        m = cls.SPEC_RE.match(str)
+        if not m:
+            raise ValueError("invalid socket spec: %s" % (str,))
+        address = m.group("protocol") + "://" + m.group("endpoint")
+        identity = m.group("identity")
+        bind = m.group("mode")
+        bind = bind and (bind.lower() == "bind")
+        return cls(address,identity,bind)
+
+    def __str__(self):
+        s = self.address
+        if self.identity:
+             (tr,ep) = self.address.split("://",1)
+             s = "%s://%s@%s" % (tr,self.identity,ep,)
+        if self.bind:
+            s += "#bind"
+        return s
  
 
-class Connection(object):
-    """Mongrel2 connection object.
+class ConnectionBase(object):
+    """Base class for Mongrel2 connection objects.
 
-    Instances of Connection represent a handler's connection to the main
+    Instances of ConnectionBase represent a handler's connection to the main
     Mongrel2 server(s).  They are used to receive requests and send responses.
 
-    When creating a connection, you must specify at least the 'send_spec'
-    argument.  This gives the ZMQ socket address on which to receive requests
-    for processing from mongrel2.
+    You generally don't want a direct instance of ConnectionBase; use one of
+    the subclasses such as Connection or DispatcherConnection.  You might
+    also like to make your own subclass by overriding the following methods:
 
-    If specified, the 'recv_spec' argument gives the ZMQ socket address to send
-    response data back to mongrel2.  If not specified, it defaults to the same
-    host as send_spec and one port lower (which seems to be the convention for
-    mongrel2 config).
+        _poll:       block until sockets are ready for reading
+        _interrupt:  interrupt any blocking calls to poll()
+        _recv:       receive a request message from the server
+        _send:       send response data to the server
+        shutdown:    cleanly disconnect from the server
 
-    If specified, the 'send_ident' and 'recv_ident' arguments give the socket
-    identities for the send and recv sockts.  They should be UUID strings.
-    If only send_ident is specified, recv_ident will default to it.  If neither
-    are specified, the sockets will run without identity in non-durable mode.
     """
 
     ZMQ_CTX = zmq.Context()
@@ -145,36 +199,31 @@ class Connection(object):
     ClientClass = Client
     RequestClass = Request
 
-    def __init__(self,send_spec,recv_spec=None,send_ident=None,recv_ident=None):
-        self.send_spec = send_spec
-        if recv_spec is None:
-            try:
-                send_host,send_port = send_spec.rsplit(":",1)
-                send_port = int(send_port)
-            except (ValueError,TypeError):
-                msg = "cannot guess recv_spec from send_spec %r" % (send_spec,)
-                raise ValueError(msg)
-            recv_spec = send_host + ":" + str(send_port - 1)
-        self.recv_spec = recv_spec
-        self.send_ident = send_ident
-        self.recv_ident = recv_ident or send_ident
+    def __init__(self):
         self.recv_buffer = deque()
         self._has_shutdown = False
-        self.send_sock = self.ZMQ_CTX.socket(zmq.PULL)
-        if self.send_ident is not None:
-            self.send_sock.setsockopt(zmq.IDENTITY,self.send_ident)
-        self.send_sock.connect(self.send_spec)
-        self.recv_sock = self.ZMQ_CTX.socket(zmq.PUB)
-        if self.recv_ident is not None:
-            self.recv_sock.setsockopt(zmq.IDENTITY,self.recv_ident)
-        self.recv_sock.connect(self.recv_spec)
-        self._more_init()
 
-    def _more_init(self):
-        """Hook for subclass-specific initialisation code."""
-        #  We use an anonymous pipe to interrupt blocking receives.
-        #  The recv() method polls both send_sock and intr_pipe_r.
-        (self.intr_pipe_r,self.intr_pipe_w) = os.pipe()
+    @classmethod
+    def makesocket(cls,type,spec=None):
+        """Make a new socket of given type, according to the given spec.
+
+        This method is used for easy creation of sockets from a string
+        description.  It's used internally by ConnectionBase subclasses
+        if they are given a string instead of a socket, and you can use
+        it externally to create sockets for them.
+        """
+        sock = cls.ZMQ_CTX.socket(type)
+        if spec is not None:
+            if isinstance(spec,basestring):
+                spec = SocketSpec.parse(spec)
+            if spec.identity:
+                sock.setsockopt(zmq.IDENTITY,spec.identity)
+            if spec.address:
+                if spec.bind:
+                    sock.bind(spec.address)
+                else:
+                    sock.connect(spec.address)
+        return sock
 
     def recv(self,timeout=None):
         """Receive a request from the send socket.
@@ -190,44 +239,56 @@ class Connection(object):
         if self.recv_buffer:
             msg = self.recv_buffer.popleft()
         else:
-            msg = self._recv(timeout=timeout)
-            if msg is None:
+            try:
+                msg = self._recv(timeout=timeout)
+            except zmq.ZMQError, e:
+                if e.errno != zmq.EAGAIN:
+                    if not self._has_shutdown:
+                        raise
+                    if e.errno not in (zmq.ENOTSUP,zmq.EFAULT,):
+                        raise
                 return None
+            else:
+                if msg is None:
+                    return None
         #  Parse out the request object and return.
         (server_id,client_id,rest) = msg.split(' ', 2)
         client = self.ClientClass(self,server_id,client_id)
         return self.RequestClass.parse(client,rest)
 
     def _recv(self,timeout=None):
-        """Internal method of receving a message.
+        """Internal method for receving a message.
 
-        This is called by the recv() method and is mainly for convienent
-        overriding in subclasses.
+        This method must be implemented by subclasses.  It should retrieve
+        a request message and return it, or return None if it times out.
+        It's OK for it to raise EAGAIN, this will be captured up the chain.
         """
-        #  Poll send_sock for reading.
-        #  If we're blocking, also poll the interrupt pipe.
-        socks = [self.send_sock]
-        if timeout != 0:
-            socks.append(self.intr_pipe_r)
-        (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=timeout)
-        #  If we were interrupted, return None immediately
-        if self.intr_pipe_r in ready:
-            print "INTERRUPTED"
-            os.read(self.intr_pipe_r,1)
-            return None
-        #  We should now be able to grab one non-blockingly.
-        try:
-            return self.send_sock.recv(zmq.NOBLOCK)
-        except zmq.ZMQError, e:
-            if e.errno != zmq.EAGAIN:
-                if not self._has_shutdown or e.errno != zmq.ENOTSUP:
-                    raise
-            return None
+        raise NotImplementedError
 
     def _send(self,server_id,client_ids,data):
         """Internal method to send out response data."""
-        msg = "%s %d:%s, %s" % (server_id,len(client_ids),client_ids,data)
-        self.recv_sock.send(msg)
+        raise NotImplementedError
+
+    def _poll(self,sockets,timeout=None):
+        """Poll the given sockets, waiting for one to be ready for reading.
+
+        This method must be implemented by subclasses.  It should block until
+        one of the sockets and/or file descriptors in 'sockets' is ready for
+        reading, until the optional timeout has expired, or until someone calls
+        the interrupt() method.
+
+        Typically this would be a wrapper around zmq.core.poll.select, with
+        whatever logic is necessary to allow interrupts from another thread.
+        """
+        raise NotImplementedError
+
+    def _interrupt(self):
+        """Internal method for interrupting a poll.
+
+        This method must be implemented by subclasses.  It should cause any
+        blocking calls to _poll() to return immediately.
+        """
+        raise NotImplementedError
 
     def send(self,client,data):
         """Send a response to the specified client."""
@@ -265,16 +326,69 @@ class Connection(object):
         """
         if self._has_shutdown:
             return
-        #  First make sure there are no old interrupts in the pipe.
-        socks = [self.intr_pipe_r]
-        (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=0)
-        while ready:
-            os.read(self.intr_pipe_r,1)
-            (ready,_,_) = zmq.core.poll.select(socks,[],[],timeout=0)
-        #  Now write to the intrrupt pipe to trigger it.
-        os.write(self.intr_pipe_w,"X")
+        self._interrupt()
 
-    def shutdown(self):
+    def shutdown(self,timeout=None):
+        """Shut down the connection.
+
+        This indicates that no more requests should be received by the
+        handler, but it is willing to process any that have already been
+        transmitted.  Use it for graceful termination of handlers.
+
+        After shutdown, you may only call recv() with timeout=0.
+        """
+        self._has_shutdown = True
+
+    def close(self):
+        """Close the connection."""
+        self._has_shutdown = True
+
+
+
+class Connection(ConnectionBase):
+    """A standard PULL/PUB connection to Mongrel2.
+
+    This class represents the standard handler connection to Mongrel2.
+    It gets requests pushed to it via a PULL socket and sends response data
+    via a PUB socket.
+    """
+
+    def __init__(self,send_sock,recv_sock=None):
+        if recv_sock is None:
+            if not isinstance(send_sock,basestring):
+                raise ValueError("could not infer recv socket spec")
+            try:
+                (send_head,send_port) = send_sock.rsplit(":",1)
+                if "#" not in send_port:
+                    send_tail = None
+                else:
+                    (send_port,send_tail) = send_port.split("#",1)
+                recv_port = str(int(send_port)-1)
+                recv_sock = send_head + ":" + recv_port
+                if send_tail:
+                    recv_sock += "#" + send_tail
+            except (ValueError,TypeError,IndexError):
+                raise ValueError("could not infer recv socket spec")
+        if isinstance(send_sock,basestring):
+            send_sock = self.makesocket(zmq.PULL,send_sock)
+        self.send_sock = send_sock
+        if isinstance(recv_sock,basestring):
+            recv_sock = self.makesocket(zmq.PUB,recv_sock)
+        self.recv_sock = recv_sock
+        super(Connection,self).__init__()
+
+    def _recv(self,timeout=None):
+        """Internal method of receving a message."""
+        ready = self._poll([self.send_sock],timeout=timeout)
+        if self.send_sock in ready:
+            return self.send_sock.recv(zmq.NOBLOCK)
+
+    def _send(self,server_id,client_ids,data):
+        """Internal method to send out response data."""
+        msg = "%s %d:%s, %s" % (server_id,len(client_ids),client_ids,data)
+        self.recv_sock.send(msg)
+
+    def shutdown(self,timeout=None):
         """Shut down the connection.
 
         This indicates that no more requests should be received by the
@@ -289,25 +403,124 @@ class Connection(object):
         a slight race condition that a request will be pushed to us and
         then lost.
         """
-        req = self.recv(timeout=0)
-        while req is not None:
-            self.recv_buffer.append(req)
-            req = self.recv(timeout=0)
+        msg = self._recv(timeout=0)
+        while msg is not None:
+            self.recv_buffer.append(msg)
+            msg = self._recv(timeout=0)
         self.send_sock.close()
-        self._has_shutdown = True
+        super(Connection,self).shutdown(timeout)
 
     def close(self):
         """Close the connection."""
         self.send_sock.close()
         self.recv_sock.close()
-        self._has_shutdown = True
-        self._close()
+        super(Connection,self).close()
 
-    def _close(self):
-        os.close(self.intr_pipe_r)
-        self.intr_pipe_r = None
-        os.close(self.intr_pipe_w)
-        self.intr_pipe_w = None
+
+class DispatcherConnection(ConnectionBase):
+    """A connection to Mongrel2 via a m2wsgi Dispatcher device.
+
+    This class is designed to work with the m2wsgi Dispatcher device.  It
+    gets requests and sends replies over a single XREQ socket, and also 
+    listens for heartbeat pings on a SUB socket.
+    """
+
+    def __init__(self,disp_sock,ping_sock=None):
+        super(DispatcherConnection,self).__init__()
+        self._shutting_down = False
+        if isinstance(disp_sock,basestring):
+            disp_sock = self.makesocket(zmq.XREQ,disp_sock)
+        self.disp_sock = disp_sock
+        if isinstance(ping_sock,basestring):
+            ping_sock = self.makesocket(zmq.SUB,ping_sock)
+        if ping_sock is not None:
+            ping_sock.setsockopt(zmq.SUBSCRIBE,"")
+        self.ping_sock = ping_sock
+        #  Introduce ourselves to the dispatcher
+        self._send_xreq("")
+
+    def _recv(self,timeout=None):
+        """Internal method for receving a message."""
+        socks = [self.disp_sock]
+        if self.ping_sock is not None:
+            socks.append(self.ping_sock)
+        ready = self._poll(socks,timeout=timeout)
+        try:
+            #  If we were pinged, respond to say we're still alive
+            #  (or that we're shutting down)
+            if self.ping_sock in ready:
+                self.ping_sock.recv(zmq.NOBLOCK)
+                if self._shutting_down:
+                    self._send_xreq("X")
+                else:
+                    self._send_xreq("")
+            #  Try to grab a request non-blockingly.
+            return self._recv_xreq(zmq.NOBLOCK)
+        except zmq.ZMQError, e:
+            #  That didn't work out, return None.
+            if e.errno != zmq.EAGAIN:
+                if not self._has_shutdown:
+                    raise
+                if e.errno not in (zmq.ENOTSUP,zmq.EFAULT,):
+                    raise
+            return None
+
+    def _send(self,server_id,client_ids,data):
+        """Internal method to send out response data."""
+        msg = "%s %d:%s, %s" % (server_id,len(client_ids),client_ids,data)
+        self._send_xreq(msg)
+
+    def _recv_xreq(self,flags=0):
+        """Receive a message from the XREQ socket.
+
+        This method contains the logic for stripping XREQ message delimiters,
+        leaving just the message to be returned.
+        """
+        delim = self.disp_sock.recv(flags)
+        if delim != "":
+            return delim
+        msg = self.disp_sock.recv(flags)
+        return msg
+
+    def _send_xreq(self,msg,flags=0):
+        """Send a message through the XREQ socket.
+
+        This method contains the logic for adding XREQ message delimiters.
+        """
+        self.disp_sock.send("",flags | zmq.SNDMORE)
+        self.disp_sock.send(msg,flags)
+
+    def shutdown(self,timeout=None):
+        """Shut down the connection.
+
+        This indicates that no more requests should be received by the
+        handler, but it is willing to process any that have already been
+        transmitted.  Use it for graceful termination of handlers.
+
+        After shutdown, you may only call recv() with timeout=0.
+
+        For the dispatcher connection, we send a single-byte message "X"
+        to indicate that we're shutting down.  We then have to read in all
+        incoming messages until the dispatcher responds with an "X" to
+        indicate that the shutdown was recognised.
+        """
+        print "SHUT DOWN"
+        self._shutting_down = True
+        self._send_xreq("X")
+        msg = self._recv(timeout=timeout)
+        while msg != "X":
+            self.recv_buffer.append(msg)
+            msg = self._recv(timeout=timeout)
+        print "GOT DISCONNECT"
+        super(DispatcherConnection,self).shutdown(timeout)
+
+    def close(self):
+        """Close the connection."""
+        self.disp_sock.close()
+        if self.ping_sock is not None:
+            self.ping_sock.close()
+        super(DispatcherConnection,self).close()
+
 
 
 class Handler(object):
@@ -373,7 +586,7 @@ class Handler(object):
 
     def _shutdown(self):
         #  Attempt a clean disconnect from the socket.
-        self.connection.shutdown()
+        self.connection.shutdown(timeout=5)
         #  We have to handle anything that's already in our recv queue,
         #  or the requests will get lost when we close the socket.
         req = self.connection.recv(timeout=0)
@@ -588,17 +801,8 @@ class StreamingUploadFile(InputStream):
         return data
 
     def _wait_for_data(self):
-        """Wait for more data to be available from this upload.
-
-        The base implementation simply does a sleep loop until the
-        file grows past its current position.  Eventually we could try
-        using file notifications to detect change.
-        """
-        curpos = self.fileobj.tell()
-        cursize = os.fstat(self.fileobj.fileno()).st_size
-        while curpos >= cursize:
-            time.sleep(0.01)
-            cursize = os.fstat(self.fileobj.fileno()).st_size
+        """Wait for more data to be available from this upload."""
+        raise NotImplementedError
 
 
 class WSGIHandler(Handler):

@@ -69,6 +69,7 @@ class GZipMiddleware(object):
                                 headers[i] = (k,v+", Accept-Encoding")
                             else:
                                 headers[i] = (k,"Accept-Encoding")
+                headers.append(("Content-Encoding","gzip"))
                 if has_content_length:
                     handler.append(self._respond_compressed_block)
                     handler.append(gzf)
@@ -83,11 +84,11 @@ class GZipMiddleware(object):
                 #  The returned write() function will buffer all of its
                 #  data until an actual chunk is yielded from the app.
                 return gzf.write
-        output = iter(self.application(environ,my_start_response))
+        output = self.application(environ,my_start_response)
         #  We have to read up to the first yielded chunk to give
         #  the app a change to call start_response.
         try:
-            (_,output) = ipeek(output)
+            (_,output) = ipeek(iter(output))
         except StopIteration:
             output = [""]
         return handler[0](output,*handler[1:])
@@ -112,8 +113,9 @@ class GZipMiddleware(object):
                 gzf.flush()
                 yield gzf.fileobj.getvalue()
                 gzf.fileobj = StringIO()
+        fileobj = gzf.fileobj
         gzf.close()
-        yield gzf.fileobj.getvalue()
+        yield fileobj.getvalue()
 
     def _respond_compressed_block(self,output,gzf,sr,status,headers,exc_info):
         """Respond with a single block of compressed data.
@@ -126,11 +128,11 @@ class GZipMiddleware(object):
         and stream the response, then let the server sort out how to terminate
         the connection.
         """
-        #  Helper function to remove any content-length headers and
+        #  Hel.per function to remove any content-length headers and
         #  then respond with streaming compression.
         def streamit():
             todel = []
-            for (i,(k,v)) in headers:
+            for (i,(k,v)) in enumerate(headers):
                 if k.lower() == "content-length":
                     todel.append(i)
             for i in reversed(todel):
@@ -166,7 +168,7 @@ class GZipMiddleware(object):
         """
         code = status.split(" ",1)[0]
         #  Don't do it if the browser doesn't support it.
-        if gzip not in environ.get("HTTP_ACCEPT_ENCODING",""):
+        if "gzip" not in environ.get("HTTP_ACCEPT_ENCODING",""):
             return False
         #  Don't do it for error responses, or things with no content.
         if not code.startswith("2"):
@@ -212,7 +214,7 @@ class _PeekedIter(object):
     """Iterable that has had its first item peeked at."""
     def __init__(self,firstitem,iterable):
         self.iterable = iterable
-        self.allitems = chain(firstitem,iterable)
+        self.allitems = chain((firstitem,),iterable)
     def __len__(self):
         return len(self.iterable)
     def __iter__(self):
