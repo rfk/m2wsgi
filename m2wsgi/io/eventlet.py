@@ -31,6 +31,8 @@ from eventlet.event import Event
 from eventlet.hubs import use_hub
 eventlet.hubs.use_hub("zeromq")
 
+from greenlet import GreenletExit
+
 
 #  Older eventlet versions have buggy support for non-blocking zmq requests:
 #
@@ -143,8 +145,12 @@ class ConnectionBase(base.ConnectionBase):
             res.wait()
         finally:
             self.poll_threads.remove((res,threads))
-        for t in threads:
-            t.kill()
+            for t in threads:
+                t.kill()
+                try:
+                    t.wait()
+                except GreenletExit:
+                    pass
         return ready
 
     def _do_poll(self,sock,ready,res,timeout):
@@ -154,11 +160,13 @@ class ConnectionBase(base.ConnectionBase):
             pass
         else:
             ready.append(sock)
-            res.send()
+            if not res.ready():
+                res.send()
 
     def _interrupt(self):
         for (res,threads) in self.poll_threads:
-            res.send()
+            if not res.ready():
+                res.send()
             for t in threads:
                 t.kill()
 

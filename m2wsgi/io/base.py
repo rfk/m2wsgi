@@ -504,14 +504,19 @@ class DispatcherConnection(ConnectionBase):
         incoming messages until the dispatcher responds with an "X" to
         indicate that the shutdown was recognised.
         """
-        print "SHUT DOWN"
         self._shutting_down = True
         self._send_xreq("X")
+        t_start = time.time()
         msg = self._recv(timeout=timeout)
-        while msg != "X":
-            self.recv_buffer.append(msg)
+        t_end = time.time()
+        timeout -= (t_end - t_start)
+        while msg != "X" and (timeout is None or timeout > 0):
+            if msg:
+                self.recv_buffer.append(msg)
+            t_start = time.time()
             msg = self._recv(timeout=timeout)
-        print "GOT DISCONNECT"
+            t_end = time.time()
+            timeout -= (t_end - t_start)
         super(DispatcherConnection,self).shutdown(timeout)
 
     def close(self):
