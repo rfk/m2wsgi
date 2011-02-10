@@ -61,51 +61,72 @@ class ConnectionBase(base.ConnectionBase):
     ZMQ_CTX = zmq.Context()
 
     #  a blocking zmq.core.poll doesn't play nice with gevent.  We have to
-    #  poll based on ZMQ_FD.  Each call to _poll() registers a new event
-    #  into the gevent hub for each socket.  Calls to interrupt() cancel
-    #  the pending events.
+    #  poll based on ZMQ_FD.  Each polled socket gets a persistent gevent
+    #  read_event and a list of Event objects to signal on when ready; calls
+    #  to interrupt() just signal the events early.
     def __init__(self):
         super(ConnectionBase,self).__init__()
-        self.poll_events = []
+        self.poll_events = {}
 
     def _poll(self,sockets,timeout=None):
         #  Polling based on ZMQ_FD is edge-triggered, so before we do that
         #  we need to make sure there's no data currently available.
-        (r,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
-        if r:
-            return r
+        (ready,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
+        if ready:
+            return ready
         if timeout == 0:
             return []
-        #  Now we can do the zmq polling.
-        #  I'm not happy with this by the way, it uses an internal API of
-        #  the gevent_zmq module.
-        ready = []
-        events = []
+        #  Now we can do the ZMQ_FD polling.
+        #  We ask the poll event for each socket to signal this event
+        #  when it is ready for reading.
         res = gevent.event.Event()
+        #  In the common case there will already be a poll event
+        #  set up for each socket, but if not then we set one up.
         for sock in sockets:
             fd = sock.getsockopt(zmq.FD)
-            def on_ready(*args):
-                ready.append(sock)
-                res.set()
-            events.append(gevent.core.read_event(fd,on_ready))
-        self.poll_events.append((res,events))
+            try:
+                (evt,reslst) = self.poll_events[fd]
+            except KeyError:
+                reslst = []
+                def on_ready(evt,fd,reslst=reslst):
+                    for res in reslst:
+                        res.set()
+                evt = gevent.core.read_event(fd,on_ready,persist=True)
+                self.poll_events[fd] = (evt,reslst)
+            reslst.append(res)
         try:
+            #  Wait for the event to be signalled, with optional timeout.
             if timeout is None:
                 res.wait()
             else:
                 with gevent.Timeout(timeout,False):
                     res.wait()
         finally:
-            self.poll_events.remove((res,events))
-        for e in events:
-            e.cancel()
+            #  Remove our event from the list of things to be signalled.
+            for sock in sockets:
+                fd = sock.getsockopt(zmq.FD)
+                try:
+                    (evt,reslst) = self.poll_events[fd]
+                except KeyError:
+                    pass
+                else:
+                    reslst.remove(res)
+        #  The peristent poll events just signal us when *something* is
+        #  ready, they don't tell us what it was. Nevermind, just ask zmq.
+        (ready,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
         return ready
 
     def _interrupt(self):
-        for (res,events) in self.poll_events:
-            res.set()
-            for e in events:
-                e.cancel()
+        for (evt,reslst) in self.poll_events.values():
+            for res in reslst:
+                res.set()
+
+    def close(self):
+        for (evt,reslst) in self.poll_events.values():
+            evt.cancel()
+            for res in reslst:
+                res.set()
+        super(ConnectionBase,self).close()
 
 
 
