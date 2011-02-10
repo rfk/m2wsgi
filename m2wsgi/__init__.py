@@ -1,7 +1,7 @@
 """
 
-m2wsgi:  a mongrel2 => wsgi gateway
-===================================
+m2wsgi:  a mongrel2 => wsgi gateway and helper tools
+====================================================
 
 
 This module provides a WSGI gateway handler for the Mongrel2 webserver,
@@ -97,6 +97,7 @@ classes useful:
                   WSGI-specific in it.
 
 
+
 Devices
 -------
 
@@ -105,11 +106,13 @@ This module also provides a number of pre-built "devices" - stand-alone
 executables designed to perform a specific common task.  Currently availble
 devices are:
 
-    :dispatcher:    implements a more flexible request-routing scheme than
-                    the standard mongrel2 PUSH socket.
+    :dispatcher:  implements a more flexible request-routing scheme than
+                  the standard mongrel2 PUSH socket.
 
     :response:    implements a simple canned response, with ability to
                   interpolate variables from the request.
+
+    :reaper:      a device for timing out hung or inactive requests.
 
 
 

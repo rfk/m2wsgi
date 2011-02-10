@@ -19,6 +19,7 @@ v0.4.0
         * demo class using consistent hashing is available
         * sends explicit pings to detect dead handler processes
     * New "response" device gives out easy canned responses.
+    * New "reaper" device implements simplistic request timeouts.
     * added some utility middleware for use by the server:
         * GZipMiddleware:  gzip response bodies
         * BufferMiddleware:  buffer response bodies, for better compression

@@ -72,10 +72,8 @@ about it :-(
 
 """
 
-import sys
 import os
 import errno
-import optparse
 import threading
 from textwrap import dedent
 from collections import deque
@@ -478,6 +476,7 @@ class Dispatcher(object):
 
 
 if __name__ == "__main__":
+    import optparse
     op = optparse.OptionParser(usage=dedent("""
     usage:  m2wsgi.device.dispatcher send_spec recv_spec disp_spec ping_spec
     """))
