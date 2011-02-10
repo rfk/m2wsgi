@@ -1,7 +1,7 @@
 
 
-m2wsgi:  a mongrel2 => wsgi gateway
-===================================
+m2wsgi:  a mongrel2 => wsgi gateway and helper tools
+====================================================
 
 
 This module provides a WSGI gateway handler for the Mongrel2 webserver,
@@ -11,7 +11,6 @@ pluggable backends for evented I/O a la eventlet.
 
 You might also find its supporting classes useful for developing non-WSGI
 handlers in python.
-
 
 
 Command-line usage
@@ -37,6 +36,25 @@ you can use eventlet to shuffle the bits around like so::
 You can also use --io=gevent if that's how you roll.  Contributions for
 other async backends are most welcome.
 
+If you need to add fancy features to the server, you can specify additional
+WSGI middleware that should be applied around the application.  For example,
+m2wsgi provides a gzip-encoding middleware that can be used to compress
+response data::
+
+    m2wsgi --middleware=GZipMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+If you want additional compression at the expense of WSGI compliance, you
+can also do some in-server buffering before the gzipping is applied:
+
+    m2wsgi --middleware=GZipMiddleware
+           --middleware=BufferMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+The default module for loading middleware is m2wsgi.middleware; specify a
+full dotted name to load a middleware class from another module.
+
+
 
 Programmatic Usage
 ------------------
@@ -45,7 +63,7 @@ If you have more complicated needs, you can use m2wsgi from within your
 application.  The main class is 'WSGIHandler' which provides a simple
 server interface.  The equivalent of the above command-line usage is::
 
-    from m2wsgi.base import WSGIHandler
+    from m2wsgi.io.standard import WSGIHandler
     handler = WSGIHandler(my_wsgi_app,"tcp://127.0.0.1:9999")
     handler.serve()
 
@@ -54,12 +72,12 @@ that the Mongrel2 recv socket is on the next port down from the send socket,
 and that it's OK to connect the socket without a persistent identity.
 
 For finer control over the connection between your handler and Mongrel2,
-create your own Connection object::
+create your own Connection object.  Here we use 127.0.0.1:9999 as the send
+socket with identity AA-BB-CC, and use 127.0.0.2:9992 as the recv socket::
 
-    from m2wsgi.base import WSGIHandler, Connection
-    conn = Connection(send_spec="tcp://127.0.0.1:9999",
-                      recv_spec="tcp://127.0.0.1:9992",
-                      send_ident="9a5eee79-dbd5-4f33-8fd0-69b304c6035a")
+    from m2wsgi.io.standard import WSGIHandler, Connection
+    conn = Connection(send_sock="tcp://AA-BB-CC@127.0.0.1:9999",
+                      recv_sock="tcp://127.0.0.1:9992")
     handler = WSGIHandler(my_wsgi_app,conn)
     handler.serve()
 
@@ -67,10 +85,35 @@ If you're creating non-WSGI handlers for Mongrel2 you might find the following
 classes useful:
 
     :Connection:  represents the connection from your handler to Mongrel2,
-                  through which you can read requests and rend responses.
+                  through which you can read requests and send responses.
+
+    :Client:      represents a client connected to the server, to whom you
+                  can send data at any time.
 
     :Request:     represents a client request to which you can asynchronously
                   send response data at any time.
+
+    :Handler:     a base class for implementing handlers, with nothing
+                  WSGI-specific in it.
+
+
+
+Devices
+-------
+
+
+This module also provides a number of pre-built "devices" - stand-alone
+executables designed to perform a specific common task.  Currently availble
+devices are:
+
+    :dispatcher:  implements a more flexible request-routing scheme than
+                  the standard mongrel2 PUSH socket.
+
+    :response:    implements a simple canned response, with ability to
+                  interpolate variables from the request.
+
+    :reaper:      a device for timing out hung or inactive requests.
+
 
 
 Don't we already have one of these?
@@ -110,18 +153,14 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
-    * When running multiple threads, ctrl-C doesn't cleanly exit the process.
-      Seems like the background threads get stuck in a blocking recv().
-      I *really* don't want to emulate interrupts using zmq_poll...
-
-    * The zmq load-balancing algorithm is greedy round-robin, which isn't
-      ideal.  For example, it can schedule several fast requests to the same
-      thread as a slow one, making them wait even if other threads become
-      available.  I'm working on a zmq adapter that can do something better
-      (see the pull2xreq device in this distribution).
+    * Need to document use of devices, esp the dispatcher.
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
+
+    * When launched from the command-line, catch SIGHUP and/or SIGUSR1 and
+      re-execute  the handler.  This will allow easy auto-reload without
+      having to do any serious work.
 
 

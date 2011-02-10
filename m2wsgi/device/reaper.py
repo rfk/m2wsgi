@@ -1,7 +1,7 @@
 """
 
 m2wsgi.device.reaper:  helper for timing out requests
-==========================================================
+=====================================================
 
 
 This is a device for timing out hung or expired requests.  It uses the mongrel2
