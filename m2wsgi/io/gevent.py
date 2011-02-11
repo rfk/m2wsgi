@@ -30,6 +30,7 @@ import gevent
 import gevent.monkey
 import gevent.event
 import gevent.core
+import gevent.hub
 
 import zmq.core.poll as zmq_poll
 from gevent_zeromq import zmq
@@ -62,7 +63,7 @@ class ConnectionBase(base.ConnectionBase):
 
     #  a blocking zmq.core.poll doesn't play nice with gevent.  We have to
     #  poll based on ZMQ_FD.  Each polled socket gets a persistent gevent
-    #  read_event and a list of Event objects to signal on when ready; calls
+    #  read_event and an Event object to signal on when ready; calls
     #  to interrupt() just signal the events early.
     def __init__(self):
         super(ConnectionBase,self).__init__()
@@ -71,61 +72,61 @@ class ConnectionBase(base.ConnectionBase):
     def _poll(self,sockets,timeout=None):
         #  Polling based on ZMQ_FD is edge-triggered, so before we do that
         #  we need to make sure there's no data currently available.
-        (ready,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
+        (ready,_,error) = zmq_poll.select(sockets,[],sockets,timeout=0)
         if ready:
             return ready
+        if error:
+            return []
         if timeout == 0:
             return []
         #  Now we can do the ZMQ_FD polling.
-        #  We ask the poll event for each socket to signal this event
-        #  when it is ready for reading.
+        #  First make sure each socket has an event and signal set up.
+        #  Then spawn a greenthread to wait on each signal.
+        threads = []
         res = gevent.event.Event()
-        #  In the common case there will already be a poll event
-        #  set up for each socket, but if not then we set one up.
         for sock in sockets:
             fd = sock.getsockopt(zmq.FD)
             try:
-                (evt,reslst) = self.poll_events[fd]
+                (evt,sig) = self.poll_events[fd]
+                sig.clear()
             except KeyError:
-                reslst = []
-                def on_ready(evt,fd,reslst=reslst):
-                    for res in reslst:
-                        res.set()
-                evt = gevent.core.read_event(fd,on_ready,persist=True)
-                self.poll_events[fd] = (evt,reslst)
-            reslst.append(res)
+                sig = gevent.event.Event()
+                def on_ready(evt,what,sig=sig):
+                    sig.set()
+                try:
+                    read_event = gevent.hub.get_hub().reactor.read_event
+                    evt = read_event(fd,persist=True)
+                    evt.add(None,on_ready)
+                except AttributeError:
+                    evt = gevent.core.read_event(fd,on_ready,persist=True)
+                self.poll_events[fd] = (evt,sig)
+            def wait_for_signal(sig=sig,res=res,sock=sock):
+                sig.wait()
+                res.set()
+            threads.append(gevent.spawn(wait_for_signal))
+        #  Wait for the 'res' event to be triggered by some socket.
         try:
-            #  Wait for the event to be signalled, with optional timeout.
             if timeout is None:
                 res.wait()
             else:
                 with gevent.Timeout(timeout,False):
                     res.wait()
         finally:
-            #  Remove our event from the list of things to be signalled.
-            for sock in sockets:
-                fd = sock.getsockopt(zmq.FD)
-                try:
-                    (evt,reslst) = self.poll_events[fd]
-                except KeyError:
-                    pass
-                else:
-                    reslst.remove(res)
+            gevent.killall(threads)
+            gevent.joinall(threads)
         #  The peristent poll events just signal us when *something* is
         #  ready, they don't tell us what it was. Nevermind, just ask zmq.
         (ready,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
         return ready
 
     def _interrupt(self):
-        for (evt,reslst) in self.poll_events.values():
-            for res in reslst:
-                res.set()
+        for (evt,sig) in self.poll_events.values():
+            sig.set()
 
     def close(self):
-        for (evt,reslst) in self.poll_events.values():
+        for (evt,sig) in self.poll_events.values():
             evt.cancel()
-            for res in reslst:
-                res.set()
+            sig.set()
         super(ConnectionBase,self).close()
 
 
