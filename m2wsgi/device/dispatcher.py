@@ -82,6 +82,7 @@ import zmq.core.poll
 
 from m2wsgi.io.standard import Connection
 from m2wsgi.util import CheckableQueue
+from m2wsgi.util.conhash import ConsistentHash
 
 
 class Dispatcher(object):
@@ -212,7 +213,6 @@ class Dispatcher(object):
         #  be picked up on the next scheduled ping.
         while self.running:
             ready = self.poll()
-            #print "READY", self.ping_state, map(self._whatis,ready), list(self.active_handlers)
             #  If we're quiescent and there are requests ready, go
             #  to active pinging of handlers.
             if self.ping_state == 0:
@@ -221,7 +221,7 @@ class Dispatcher(object):
             #  If we need to send a ping but there's no work to do, go
             #  quiescent instead of waking everyone up.
             elif self.ping_state == 1:
-                if not self.active_handlers:
+                if not self.has_active_handlers():
                     self.ping_state = 0
                 elif not self.alive_handlers:
                     if self.send_sock not in ready:
@@ -258,7 +258,7 @@ class Dispatcher(object):
             #  If we have some active handlers, we can dispatch a request.
             #  Note that we only send a single request then re-enter
             #  this loop, to give handlers a chance to wake up.
-            if self.active_handlers or not self.pending_requests:
+            if self.has_active_handlers():
                 req = self.get_pending_request()
                 if req is not None:
                     try:
@@ -267,6 +267,12 @@ class Dispatcher(object):
                     except Exception:
                         self.pending_requests.append(req)
                         raise
+            #  Otherwise, try to get one into memory so we know that
+            #  we should be pinging handlers.
+            elif not self.pending_requests:
+                req = self.get_pending_request()
+                if req is not None:
+                    self.pending_requests.append(req)
 
     def poll(self):
         """Get the sockets that are ready for reading.
@@ -282,10 +288,10 @@ class Dispatcher(object):
         try:
             #  Poll for new requests if we have handlers ready, or if
             #  we have no pending requests.
-            if self.active_handlers or not self.pending_requests:
+            if self.has_active_handlers() or not self.pending_requests:
                 rsocks.append(self.send_sock)
             #  Poll for ability to send requests if we have some queued
-            if self.pending_requests and self.active_handlers:
+            if self.pending_requests and self.has_active_handlers():
                 wsocks.append(self.disp_sock)
             #  Poll for ability to send shutdown acks if we have some queued
             if self.disconnecting_handlers:
@@ -298,7 +304,6 @@ class Dispatcher(object):
             if self.ping_state == 1:
                 wsocks.append(self.ping_sock)
             #  OK, we can now actually poll.
-            #print "POLL", self.ping_state, map(self._whatis,rsocks), map(self._whatis,wsocks), list(self.active_handlers)
             (ready,_,_) = zmq.core.poll.select(rsocks,wsocks,[])
             return ready
         except zmq.ZMQError, e:
@@ -313,6 +318,14 @@ class Dispatcher(object):
         this method to use a different container datatype.
         """
         return CheckableQueue()
+
+    def has_active_handlers(self):
+        """Check whether we have any active handlers.
+
+        By default this calls bool(self.active_handlers).  Subclasses can
+        override this method if they use a strange container datatype.
+        """
+        return bool(self.active_handlers)
 
     def rem_active_handler(self,handler):
         """Remove the given handler from the list of active handlers.
@@ -331,6 +344,14 @@ class Dispatcher(object):
         append() method.
         """
         self.active_handlers.append(handler)
+
+    def is_active_handler(self,handler):
+        """Check whether the given handler is in the list of active handlers.
+
+        Subclasses may need to override this if they are using a custom
+        container type that doesn't support __contains__.
+        """
+        return (handler in self.active_handlers)
 
     def send_ping(self):
         """Send a ping to all listening handlers.
@@ -426,7 +447,7 @@ class Dispatcher(object):
         This means we can dispatch requests to this handler and have a
         reasonable chance of them being handled.
         """
-        if handler not in self.active_handlers:
+        if not self.is_active_handler(handler):
             self.add_active_handler(handler)
         self.alive_handlers.add(handler)
         try:
@@ -482,6 +503,38 @@ class Dispatcher(object):
                 raise
             return False
 
+
+class ConsistentHashDispatcher(Dispatcher):
+    """Dispatcher routing requests via consistent hashing.
+
+    This is an example Dispatcher subclass that routes requests to handlers
+    based on a consistent hash of the request path.  Obviously in real
+    life you would hash based on e.g. a session cookie, but I don't know
+    what you session cookie is called.
+    """
+
+    def init_active_handlers(self):
+        return ConsistentHash()
+
+    def has_active_handlers(self):
+        return bool(self.active_handlers.target_ring)
+
+    def add_active_handler(self,handler):
+        self.active_handlers.add_target(handler)
+
+    def rem_active_handler(self,handler):
+        self.active_handlers.rem_target(handler)
+
+    def is_active_handler(self,handler):
+        for (h,t) in self.active_handlers.target_ring:
+            if t == handler:
+                return True
+        return False
+
+    def dispatch_request(self,req):
+        (sid,cid,path,rest) = req.split(' ',3)
+        handler = self.active_handlers[path]
+        return self.send_request_to_handler(req,handler)
 
 
 if __name__ == "__main__":
