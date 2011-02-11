@@ -156,14 +156,23 @@ class SocketSpec(object):
         self.bind = bind
 
     @classmethod
-    def parse(cls,str):
+    def parse(cls,str,default_bind=False):
         m = cls.SPEC_RE.match(str)
         if not m:
             raise ValueError("invalid socket spec: %s" % (str,))
         address = m.group("protocol") + "://" + m.group("endpoint")
         identity = m.group("identity")
         bind = m.group("mode")
-        bind = bind and (bind.lower() == "bind")
+        if not bind:
+            bind = default_bind
+        else:
+            bind = bind.lower()
+            if bind == "bind":
+                bind = True
+            elif bind == "connect":
+                bind = False
+            else:
+                bind = default_bind
         return cls(address,identity,bind)
 
     def __str__(self):
@@ -204,7 +213,7 @@ class ConnectionBase(object):
         self._has_shutdown = False
 
     @classmethod
-    def makesocket(cls,type,spec=None):
+    def makesocket(cls,type,spec=None,bind=False):
         """Make a new socket of given type, according to the given spec.
 
         This method is used for easy creation of sockets from a string
@@ -215,7 +224,7 @@ class ConnectionBase(object):
         sock = cls.ZMQ_CTX.socket(type)
         if spec is not None:
             if isinstance(spec,basestring):
-                spec = SocketSpec.parse(spec)
+                spec = SocketSpec.parse(spec,default_bind=bind)
             if spec.identity:
                 sock.setsockopt(zmq.IDENTITY,spec.identity)
             if spec.address:
@@ -224,6 +233,29 @@ class ConnectionBase(object):
                 else:
                     sock.connect(spec.address)
         return sock
+
+    @classmethod
+    def copysockspec(cls,in_spec,relport):
+        """Copy the given socket spec, adjust port.
+
+        This is useful for filling in defaults, e.g. inferring the recv
+        spec from the send spec.
+        """
+        if not isinstance(in_spec,basestring):
+            return None
+        try:
+            (in_head,in_port) = in_spec.rsplit(":",1)
+            if "#" not in in_port:
+                in_tail = None
+            else:
+                (in_port,in_tail) = in_port.split("#",1)
+            out_port = str(int(in_port) + relport)
+            out_spec = in_head + ":" + out_port
+            if in_tail is not None:
+                out_spec += "#" + in_tail
+            return out_spec
+        except (ValueError,TypeError,IndexError):
+            return None
 
     def recv(self,timeout=None):
         """Receive a request from the send socket.
@@ -355,19 +387,8 @@ class Connection(ConnectionBase):
 
     def __init__(self,send_sock,recv_sock=None):
         if recv_sock is None:
-            if not isinstance(send_sock,basestring):
-                raise ValueError("could not infer recv socket spec")
-            try:
-                (send_head,send_port) = send_sock.rsplit(":",1)
-                if "#" not in send_port:
-                    send_tail = None
-                else:
-                    (send_port,send_tail) = send_port.split("#",1)
-                recv_port = str(int(send_port)-1)
-                recv_sock = send_head + ":" + recv_port
-                if send_tail:
-                    recv_sock += "#" + send_tail
-            except (ValueError,TypeError,IndexError):
+            recv_sock = self.copysockspec(send_sock,-1)
+            if recv_sock is None:
                 raise ValueError("could not infer recv socket spec")
         if isinstance(send_sock,basestring):
             send_sock = self.makesocket(zmq.PULL,send_sock)
@@ -427,23 +448,24 @@ class DispatcherConnection(ConnectionBase):
 
     def __init__(self,disp_sock,ping_sock=None):
         super(DispatcherConnection,self).__init__()
+        if ping_sock is None:
+            ping_sock = self.copysockspec(disp_sock,1)
+            if ping_sock is None:
+                raise ValueError("could not infer ping socket spec")
         self._shutting_down = False
         if isinstance(disp_sock,basestring):
             disp_sock = self.makesocket(zmq.XREQ,disp_sock)
         self.disp_sock = disp_sock
         if isinstance(ping_sock,basestring):
             ping_sock = self.makesocket(zmq.SUB,ping_sock)
-        if ping_sock is not None:
-            ping_sock.setsockopt(zmq.SUBSCRIBE,"")
+        ping_sock.setsockopt(zmq.SUBSCRIBE,"")
         self.ping_sock = ping_sock
         #  Introduce ourselves to the dispatcher
         self._send_xreq("")
 
     def _recv(self,timeout=None):
         """Internal method for receving a message."""
-        socks = [self.disp_sock]
-        if self.ping_sock is not None:
-            socks.append(self.ping_sock)
+        socks = [self.disp_sock,self.ping_sock]
         ready = self._poll(socks,timeout=timeout)
         try:
             #  If we were pinged, respond to say we're still alive
@@ -522,8 +544,7 @@ class DispatcherConnection(ConnectionBase):
     def close(self):
         """Close the connection."""
         self.disp_sock.close()
-        if self.ping_sock is not None:
-            self.ping_sock.close()
+        self.ping_sock.close()
         super(DispatcherConnection,self).close()
 
 

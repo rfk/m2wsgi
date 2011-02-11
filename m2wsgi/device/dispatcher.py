@@ -87,16 +87,25 @@ from m2wsgi.util import CheckableQueue
 class Dispatcher(object):
     """Device for dispatching requests to handlers."""
 
-    def __init__(self,send_sock,recv_sock,disp_sock,ping_sock,ping_interval=1):
+    def __init__(self,send_sock,recv_sock,disp_sock=None,ping_sock=None,
+                      ping_interval=1):
         self.running = False
+        if recv_sock is None:
+            recv_sock = Connection.copysockspec(send_sock,-1)
+            if recv_sock is None:
+                raise ValueError("could not infer recv socket spec")
+        if ping_sock is None:
+            ping_sock = Connection.copysockspec(disp_sock,1)
+            if ping_sock is None:
+                raise ValueError("could not infer ping socket spec")
         if isinstance(send_sock,basestring):
             send_sock = Connection.makesocket(zmq.PULL,send_sock)
         if isinstance(recv_sock,basestring):
             recv_sock = Connection.makesocket(zmq.PUB,recv_sock)
         if isinstance(disp_sock,basestring):
-            disp_sock = Connection.makesocket(zmq.XREP,disp_sock)
+            disp_sock = Connection.makesocket(zmq.XREP,disp_sock,bind=True)
         if isinstance(ping_sock,basestring):
-            ping_sock = Connection.makesocket(zmq.PUB,ping_sock)
+            ping_sock = Connection.makesocket(zmq.PUB,ping_sock,bind=True)
         self.send_sock = send_sock
         self.recv_sock = recv_sock
         self.disp_sock = disp_sock
@@ -478,9 +487,13 @@ class Dispatcher(object):
 if __name__ == "__main__":
     import optparse
     op = optparse.OptionParser(usage=dedent("""
-    usage:  m2wsgi.device.dispatcher send_spec recv_spec disp_spec ping_spec
+    usage:  m2wsgi.device.dispatcher [options] send_spec [recv_spec] disp_spec [ping_spec]
     """))
+    op.add_option("","--ping-interval",type="int",default=1,
+                  help="interval between handler pings")
     (opts,args) = op.parse_args()
+    if len(args) == 2:
+        args = [args[0],None,args[1]]
     d = Dispatcher(*args)
     try:
         d.run()
