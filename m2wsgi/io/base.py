@@ -855,6 +855,15 @@ class WSGIHandler(Handler):
     ResponderClass = WSGIResponder
     StreamingUploadClass = StreamingUploadFile
 
+    COMMA_SEPARATED_HEADERS = [
+        'accept', 'accept-charset', 'accept-encoding', 'accept-language',
+        'accept-ranges', 'allow', 'cache-control', 'connection',
+        'content-encoding', 'content-language', 'expect', 'if-match',
+        'if-none-match', 'pragma', 'proxy-authenticate', 'te', 'trailer',
+        'transfer-encoding', 'upgrade', 'vary', 'via', 'warning',
+        'www-authenticate'
+    ]
+
     def __init__(self,application,connection):
         self.application = application
         super(WSGIHandler,self).__init__(connection)
