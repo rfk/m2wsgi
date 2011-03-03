@@ -752,24 +752,17 @@ class WSGIResponder(object):
         various output modes, e.g. whether to use chunked encoding or whether
         to close the connection when finished.
         """
-        self._write("HTTP/1.1 ")
-        self._write(self.status)
-        self._write("\r\n")
+        self._write("HTTP/1.1 %s \r\n" % (self.status,))
         has_content_length = False
         has_date = False
         for (k,v) in self.headers:
-            self._write(k)
-            self._write(": ")
-            self._write(v)
-            self._write("\r\n")
+            self._write("%s: %s\r\n" % (k,v,))
             if k.lower() == "content-length":
                 has_content_length = True
             elif k.lower() == "date":
                 has_date = True
         if not has_date:
-            self._write("Date: ")
-            self._write(rfc822_format_date())
-            self._write("\r\n")
+            self._write("Date: %s\r\n" % (rfc822_format_date(),))
         if not has_content_length:
             if self.request.headers["VERSION"] == "HTTP/1.1":
                 if self.request.headers["METHOD"] != "HEAD":
