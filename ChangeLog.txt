@@ -15,9 +15,9 @@ v0.4.0
     * Socket identities are now specified as part of a single socket-spec
       string, with a URL-like format, e.g:  tcp://IDENTITY@host:port
     * New "dispatcher" device replaces the old pull2xreq device:
-        * capable of flexible request routing
-        * demo class using consistent hashing is available
         * sends explicit pings to detect dead handler processes
+        * capable of flexible request routing
+        * supports "sticky sessions" out of the box
     * New "response" device gives out easy canned responses.
     * New "reaper" device implements simplistic request timeouts.
     * added some utility middleware for use by the server:

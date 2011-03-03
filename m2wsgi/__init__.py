@@ -36,25 +36,6 @@ you can use eventlet to shuffle the bits around like so::
 You can also use --io=gevent if that's how you roll.  Contributions for
 other async backends are most welcome.
 
-If you need to add fancy features to the server, you can specify additional
-WSGI middleware that should be applied around the application.  For example,
-m2wsgi provides a gzip-encoding middleware that can be used to compress
-response data::
-
-    m2wsgi --middleware=GZipMiddleware
-           dotted.app.name tcp://127.0.0.1:9999
-
-If you want additional compression at the expense of WSGI compliance, you
-can also do some in-server buffering before the gzipping is applied:
-
-    m2wsgi --middleware=GZipMiddleware
-           --middleware=BufferMiddleware
-           dotted.app.name tcp://127.0.0.1:9999
-
-The default module for loading middleware is m2wsgi.middleware; specify a
-full dotted name to load a middleware class from another module.
-
-
 
 Programmatic Usage
 ------------------
@@ -96,6 +77,27 @@ classes useful:
     :Handler:     a base class for implementing handlers, with nothing
                   WSGI-specific in it.
 
+
+Middleware
+----------
+
+If you need to add fancy features to the server, you can specify additional
+WSGI middleware that should be applied around the application.  For example,
+m2wsgi provides a gzip-encoding middleware that can be used to compress
+response data::
+
+    m2wsgi --middleware=GZipMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+If you want additional compression at the expense of WSGI compliance, you
+can also do some in-server buffering before the gzipping is applied:
+
+    m2wsgi --middleware=GZipMiddleware
+           --middleware=BufferMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+The default module for loading middleware is m2wsgi.middleware; specify a
+full dotted name to load a middleware class from another module.
 
 
 Devices
@@ -139,9 +141,10 @@ as you might find in e.g. the CherryPy server.  Instead, you just start up
 as many threads as you need, have them all connect to the same handler socket,
 and mongrel2 (via zmq) will automatically load-balance the requests to them.
 
-Similarly, there's no explicit support for reloading when the code changes.
-Just kill the old handler and start up a new one.  If you're using fixed
-handler UUIDs then zmq will ensure that the handover happens gracefully.
+Similarly, there's no fancy arrangement of master/worker processes to support
+clean reloading of the handler; you just kill the old handler process and start
+up a new one.  Send m2wsgi a SIGHUP and it will automatically shutdown and
+reincarnate itself for a clean restart.
 
 
 Current bugs, limitations and things to do
@@ -155,11 +158,6 @@ It's not all perfect just yet, although it does seem to mostly work:
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
-
-    * When launched from the command-line, catch SIGHUP and/or SIGUSR1 and
-      re-execute  the handler.  This will allow easy auto-reload without
-      having to do any serious work.
-
 
 """
 #  Copyright (c) 2011, Ryan Kelly.

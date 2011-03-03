@@ -101,7 +101,6 @@ classes useful:
 Devices
 -------
 
-
 This module also provides a number of pre-built "devices" - stand-alone
 executables designed to perform a specific common task.  Currently availble
 devices are:
@@ -152,10 +151,6 @@ It's not all perfect just yet, although it does seem to mostly work:
 
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
-
-    * gevent IO module doesn't work with DispatcherConnection, it will
-      serve a few requests and then just freeze up.  No idea what's going
-      wrong.
 
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
