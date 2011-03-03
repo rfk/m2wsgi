@@ -173,6 +173,8 @@ __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_su
 
 
 import sys
+import os
+from subprocess import MAXFD
 import optparse
 from textwrap import dedent
 try:
@@ -232,10 +234,17 @@ def main(argv=None):
            app = mcls(app)
     #  Try to clean up properly when killed.
     #  We turn SIGTERM into a KeyboardInterrupt exception.
+    #  We catch SIGHUP and re-execute ourself as a simple reload mechanism.
+    reload_the_process = []
     if signal is not None:
-        def interrupt():
+        def on_sigterm(*args):
             raise KeyboardInterrupt
-        signal.signal(signal.SIGTERM,lambda *a: interrupt)
+        signal.signal(signal.SIGTERM,on_sigterm)
+        def on_sighup(*args):
+            print "HUP"
+            reload_the_process.append(True)
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGHUP,on_sighup)
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
     handlers = []
@@ -251,11 +260,19 @@ def main(argv=None):
         threads.append(t)
     try:
         run_handler()
+    except KeyboardInterrupt:
+        if not reload_the_process:
+            raise
     finally:
         #  When the handler exits, shut down any background threads.
         for h in handlers:
             h.stop()
         for t in threads:
             t.join()
+    #  If we're doing a clean restart, close all fds and exec ourself.
+    if reload_the_process:
+        Connection.ZMQ_CTX.term()
+        os.closerange(3,MAXFD)
+        os.execv(sys.argv[0],sys.argv)
 
 
