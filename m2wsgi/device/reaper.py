@@ -6,7 +6,8 @@ m2wsgi.device.reaper:  helper for timing out requests
 
 This is a device for timing out hung or expired requests.  It uses the mongrel2
 control port to query connection status and issue kill commands, so you have
-to have the control port open for it to work.
+to have the control port open for it to work.  If you want it to send a proper
+"request timed out" respons then you must also specify the mongrel2 recv socket.
 
 Run it like this::
 
@@ -51,6 +52,7 @@ class Reaper(object):
             raise TypeError("unknown options: %s" % (opts.keys(),))
 
     def run(self):
+        """Reap dead requests until explicitly stopped."""
         next_reap_time = 0
         while not self.stopped:
             time.sleep(next_reap_time)
@@ -60,12 +62,19 @@ class Reaper(object):
         self.stopped = True
 
     def reap(self):
+        """Do a single pass to reap dead requests.
+
+        This method reaps any dead requests in the mongrel2 server, and
+        returns the time at which the next reap run should occur.
+        """
         next_reap_time = min(self.max_lifetime,self.max_idle_time)
         self.ctrl_sock.send("status net")
         conns = json.loads(self.ctrl_sock.recv())
         for (k,v) in conns.iteritems():
             if k == "total":
                 continue
+            if isinstance(k,unicode):
+                k = k.encode("ascii")
             #  Older mongrel2 returned a list.  Newer
             #  versions return a dict with more info.
             if isinstance(v,list):
@@ -73,8 +82,7 @@ class Reaper(object):
             if self.max_lifetime is not None:
                 last_ping = v.get("last_ping",0)
                 if last_ping >= self.max_lifetime:
-                    self.ctrl_sock.send("kill " + str(k))
-                    self.ctrl_sock.recv()
+                    self.kill_connection(k,v)
                     continue
                 time_left = self.max_lifetime - last_ping
                 if time_left < next_reap_time:
@@ -83,14 +91,34 @@ class Reaper(object):
                 last_activity = min(v.get("last_read",0),
                                     v.get("last_write",0))
                 if last_activity >= self.max_idle_time:
-                    self.ctrl_sock.send("kill " + str(k))
-                    self.ctrl_sock.recv()
+                    self.kill_connection(k,v)
                     continue
                 time_left = self.max_idle_time - last_activity
                 if time_left < next_reap_time:
                     next_reap_time = time_left
         return next_reap_time
 
+    def kill_connection(self,connid,stats):
+        """Kill the specified connection id.
+
+        This method is used to kill the specified connection id once we've
+        decided to time it out.  For HTTP requests that have had no response
+        data sent to them, a "408 Request Timed Out" response is sent; for
+        everything else we just kill the socket.
+        """
+        if self.recv_sock is not None and stats.get("last_write",0) == 0:
+            self.ctrl_sock.send("uuid")
+            resp = json.loads(self.ctrl_sock.recv())
+            if "error" not in resp:
+                srvid = resp["uuid"].encode("ascii")
+                data = "HTTP/1.1 408 Request Timed Out\r\n"
+                data += "Content-Length: 0\r\n"
+                data += "Connection: close\r\n"
+                data += "\r\n"
+                reply = "%s %d:%s, %s" % (srvid,len(connid),connid,data)
+                self.recv_sock.send(reply)
+        self.ctrl_sock.send("kill " + str(connid))
+        self.ctrl_sock.recv()
 
 if __name__ == "__main__":
     import optparse
