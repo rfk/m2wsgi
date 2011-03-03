@@ -127,7 +127,7 @@ class ConnectionBase(base.ConnectionBase):
 
     def _poll(self,sockets,timeout=None):
         #  Don't bother trampolining if there's data available immediately.
-        #  This also avoids calling into eventlet hub with a timeout of
+        #  This also avoids calling into the eventlet hub with a timeout of
         #  zero, which doesn't work right (it still switches the greenthread)
         (r,_,_) = zmq_poll.select(sockets,[],[],timeout=0)
         if r:
@@ -209,6 +209,8 @@ class Handler(base.Handler):
 
     def __init__(self,*args,**kwds):
         super(Handler,self).__init__(*args,**kwds)
+        #  We need to count the number of inflight requests, so the
+        #  main thread can wait for them to complete when shutting down.
         self._num_inflight_requests = 0
         self._all_requests_complete = None
 

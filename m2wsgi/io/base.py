@@ -399,7 +399,7 @@ class Connection(ConnectionBase):
         super(Connection,self).__init__()
 
     def _recv(self,timeout=None):
-        """Internal method of receving a message."""
+        """Internal method for receving a message."""
         ready = self._poll([self.send_sock],timeout=timeout)
         if self.send_sock in ready:
             return self.send_sock.recv(zmq.NOBLOCK)
@@ -507,7 +507,8 @@ class DispatcherConnection(ConnectionBase):
     def _send_xreq(self,msg,flags=0):
         """Send a message through the XREQ socket.
 
-        This method contains the logic for adding XREQ message delimiters.
+        This method contains the logic for adding XREQ message delimiters
+        to the message being sent.
         """
         self.disp_sock.send("",flags | zmq.SNDMORE)
         self.disp_sock.send(msg,flags)

@@ -5,7 +5,7 @@ m2wsgi.middleware.gzip:  GZip content-encoding middleware
 
 This is a GZip content-encoding WSGI middleware.  It strives hard for WSGI
 compliance, even at the expense of compression.  If you want to trade off
-compliance for better compression, but an instance of BufferMiddleware inside
+compliance for better compression, put an instance of BufferMiddleware inside
 it to collect small chunks and compress them all at once.
 
 """
