@@ -174,8 +174,8 @@ __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_su
 
 import sys
 import os
-from subprocess import MAXFD
 import optparse
+from subprocess import MAXFD
 from textwrap import dedent
 try:
     import signal
@@ -241,7 +241,6 @@ def main(argv=None):
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM,on_sigterm)
         def on_sighup(*args):
-            print "HUP"
             reload_the_process.append(True)
             raise KeyboardInterrupt
         signal.signal(signal.SIGHUP,on_sighup)

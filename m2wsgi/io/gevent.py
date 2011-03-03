@@ -46,11 +46,22 @@ def monkey_patch():
     """
     gevent.monkey.patch_all()
     gevent_zeromq.monkey_patch()
-
+    #  Patch signal module for gevent compatability.
+    #  Courtesy of http://code.google.com/p/gevent/issues/detail?id=49
+    import signal
+    _orig_signal = signal.signal
+    def gevent_signal_wrapper(signum,*args,**kwds):
+        handler = signal.getsignal(signum)
+        if callable(handler):
+            handler(signum,None)
+    def gevent_signal(signum,handler):
+        _orig_signal(signum,handler)
+        return gevent.hub.signal(signum,gevent_signal_wrapper,signum)
+    signal.signal = gevent_signal
 
 
 #  The BaseConnection recv logic is based on polling, but I can't get
-#  gevent polling only multiple sockets to work correctly.
+#  gevent polling on multiple sockets to work correctly.
 #  Instead, we simulate polling on each socket individually by reading an item
 #  and keeping it in a local buffer.
 #
@@ -62,6 +73,11 @@ class _Context(zmq._Context):
         if self.closed:
             raise zmq.ZMQError(zmq.ENOTSUP)
         return _Socket(self,socket_type)
+    def term(self):
+        #  This seems to be needed to let other greenthreads shut down.
+        #  Omit it, and the SIGHUP handler gets  "bad file descriptor" errors.
+        gevent.sleep(0.1)
+        return super(_Context,self).term()
 
 class _Socket(zmq._Socket):
     _polled_recv = None
