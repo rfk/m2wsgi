@@ -90,7 +90,7 @@ response data::
            dotted.app.name tcp://127.0.0.1:9999
 
 If you want additional compression at the expense of WSGI compliance, you
-can also do some in-server buffering before the gzipping is applied:
+can also do some in-server buffering before the gzipping is applied::
 
     m2wsgi --middleware=GZipMiddleware
            --middleware=BufferMiddleware
