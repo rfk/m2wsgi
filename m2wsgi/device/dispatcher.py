@@ -25,7 +25,32 @@ them chat with it about their availability.  Make sure you specify the conn
 type to m2wsgi::
 
     m2wsgi --conn-type=Dispatcher dotted.app.name tcp://127.0.0.1:8888
-           
+
+To make it worthwhile, you'll probably want to run several handler processes
+connecting to the dispatcher.
+
+One important use-case for the dispatcher is to implement "sticky sessions".
+By passing the --sticky option, you ensure that all requests from a specific
+connction will be routed to the same handler.
+
+By default, handler stickiness is associated with mongrel2's internal client
+id.  You can associated it with e.g. a session cookie by providing a regex
+to extract the necessary information from the request.  The information from
+any capturing groups in the regex forms the sticky session key.
+
+Here's how you might implement stickiness based on a session cookie::
+
+    python -m m2wsgi.device.dispatcher \
+              --sticky-regex="SESSIONID=([A-Za-z0-9]+)"
+              tcp://127.0.0.1:9999
+              tcp://127.0.0.1:8888
+
+Note that the current implementation of sticky sessions is based on consistent
+hashing.  This has the advantage that multiple dispatcher devices can keep
+their handler selection consistent without any explicit coordination; the
+downside is that adding handlers will cause some sessions to be moved to the
+new handler.
+
 
 
 OK, but why?
@@ -49,9 +74,9 @@ To effect a clean disconnect, the handler can send a special disconnect message
 respond with an "X" request.  At this point the handler knows that no more
 requests will be sent its way, and it can safely terminate.
 
-The basic version of this device just routes reqeusts round-robin, but you
-can easily implement more complex logic e.g. consistent hashing based on
-a session token.
+The basic version of this device just routes reqeusts round-robin, and there's
+a subclass that can implement basic sticky sessions.  More complex logic can
+easily be built in a custom subclass.
 
 
 Any Downsides?
@@ -73,6 +98,7 @@ about it :-(
 """
 
 import os
+import re
 import errno
 import threading
 from textwrap import dedent
@@ -114,6 +140,8 @@ class Dispatcher(object):
         self.ping_interval = ping_interval
         self.pending_requests = deque()
         self.pending_responses = deque()
+        #  The set of all active handlers is an opaque data type.
+        #  Subclasses can use anything they want.
         self.active_handlers = self.init_active_handlers()
         #  Handlers that have been sent a ping and haven't yet sent a
         #  reply are "dubious".  Handlers that have sent a disconnect
@@ -190,12 +218,6 @@ class Dispatcher(object):
             except EnvironmentError:
                 pass
 
-    def _whatis(self,sock):
-        for (k,v) in self.__dict__.iteritems():
-            if sock == v:
-                return k
-        return "???"
-
     def run(self):
         """Run the socket handling loop."""
         self.running = True
@@ -257,7 +279,7 @@ class Dispatcher(object):
                 self.read_handler_responses()
             #  If we have some active handlers, we can dispatch a request.
             #  Note that we only send a single request then re-enter
-            #  this loop, to give handlers a chance to wake up.
+            #  this loop, to give other handlers a chance to wake up.
             if self.has_active_handlers():
                 req = self.get_pending_request()
                 if req is not None:
@@ -504,20 +526,35 @@ class Dispatcher(object):
             return False
 
 
-class ConsistentHashDispatcher(Dispatcher):
-    """Dispatcher routing requests via consistent hashing.
+class StickyDispatcher(Dispatcher):
+    """Dispatcher implementing sticky sessions using consistent hashing.
 
-    This is an example Dispatcher subclass that routes requests to handlers
-    based on a consistent hash of the request path.  Obviously in real
-    life you would hash based on e.g. a session cookie, but I don't know
-    what you session cookie is called.
+    This is Dispatcher subclass tries to route the same connection to the
+    same handler across multiple requests, by selecting the handler based
+    on a consistent hashing algorithm.
+
+    By default the handler is selected based on the connection id.  You
+    can override this by providing a regular expression which will be run
+    against each request; the contents of all capturing groups will become
+    the handler selection key.
     """
+
+    def __init__(self,send_sock,recv_sock,disp_sock=None,ping_sock=None,
+                      ping_interval=1,sticky_regex=None):
+        if sticky_regex is None:
+            #  Capture connid from "svrid conid path headers body"
+            sticky_regex = r"^[^\s]+ ([^\s]+ )"
+        if isinstance(sticky_regex,basestring):
+            sticky_regex = re.compile(sticky_regex)
+        self.sticky_regex = sticky_regex
+        super(StickyDispatcher,self).__init__(send_sock,recv_sock,disp_sock,
+                                              ping_sock,ping_interval)
 
     def init_active_handlers(self):
         return ConsistentHash()
 
     def has_active_handlers(self):
-        return bool(self.active_handlers.target_ring)
+        return bool(self.active_handlers)
 
     def add_active_handler(self,handler):
         self.active_handlers.add_target(handler)
@@ -526,14 +563,19 @@ class ConsistentHashDispatcher(Dispatcher):
         self.active_handlers.rem_target(handler)
 
     def is_active_handler(self,handler):
-        for (h,t) in self.active_handlers.target_ring:
-            if t == handler:
-                return True
-        return False
+        return self.active_handlers.has_target(handler)
 
     def dispatch_request(self,req):
-        (sid,cid,path,rest) = req.split(' ',3)
-        handler = self.active_handlers[path]
+        #  Extract sticky key using regex
+        m = self.sticky_regex.search(req)
+        if m is None:
+            key = req
+        elif m.groups():
+            key = "".join(m.groups())
+        else:
+            key = m.group(0)
+        #  Select handler based on sticky key
+        handler = self.active_handlers[key]
         return self.send_request_to_handler(req,handler)
 
 
@@ -544,10 +586,21 @@ if __name__ == "__main__":
     """))
     op.add_option("","--ping-interval",type="int",default=1,
                   help="interval between handler pings")
+    op.add_option("","--sticky",action="store_true",
+                  help="use sticky client <-a >handler pairing")
+    op.add_option("","--sticky-regex",
+                  help="regex for extracting sticky connection key")
     (opts,args) = op.parse_args()
+    if opts.sticky_regex:
+        opts.sticky = True
     if len(args) == 2:
         args = [args[0],None,args[1]]
-    d = Dispatcher(*args)
+    kwds = opts.__dict__
+    if kwds.pop("sticky",False):
+        d = StickyDispatcher(*args,**kwds)
+    else:
+        kwds.pop("sticky_regex",None)
+        d = Dispatcher(*args,**kwds)
     try:
         d.run()
     finally:

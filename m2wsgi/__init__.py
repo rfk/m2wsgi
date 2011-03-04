@@ -159,6 +159,8 @@ It's not all perfect just yet, although it does seem to mostly work:
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
 
+    * support for except-100-continue; this may have to live in mongrel2
+
 """
 #  Copyright (c) 2011, Ryan Kelly.
 #  All rights reserved; available under the terms of the MIT License.

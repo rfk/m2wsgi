@@ -42,7 +42,6 @@ try:
     import scipy.stats
     import numpy
 except ImportError:
-    raise
     scipy = numpy = None
 
 
@@ -89,6 +88,12 @@ class RConsistentHash(object):
     def rem_target(self,target):
         self.target_ring = [(h,t) for (h,t) in self.target_ring if t != target]
 
+    def has_target(self,target):
+        for (h,t) in self.target_ring:
+            if t == target:
+                return True
+        return False
+
     def __getitem__(self,key):
         h = self.hash(key)
         i = bisect.bisect_left(self.target_ring,(h,key))
@@ -99,6 +104,9 @@ class RConsistentHash(object):
                 raise KeyError
         else:
             return self.target_ring[i][1]
+
+    def __len__(self):
+        return len(self.target_ring) / self.num_duplicates
 
 
 class SConsistentHash(object):
@@ -128,6 +136,9 @@ class SConsistentHash(object):
     def rem_target(self,target):
         self.targets.remove(target)
 
+    def has_target(self,target):
+        return (target in self.targets)
+
     def __getitem__(self,key):
         targets = iter(self.targets)
         try:
@@ -141,6 +152,9 @@ class SConsistentHash(object):
                 best_t = t
                 best_h = h
         return best_t
+
+    def __len__(self):
+        return len(self.targets)
 
 
 #  For now, we use the SConsistentHash as standard.
