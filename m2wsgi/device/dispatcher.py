@@ -560,7 +560,10 @@ class StickyDispatcher(Dispatcher):
         self.active_handlers.add_target(handler)
 
     def rem_active_handler(self,handler):
-        self.active_handlers.rem_target(handler)
+        try:
+            self.active_handlers.rem_target(handler)
+        except (KeyError,):
+            pass
 
     def is_active_handler(self,handler):
         return self.active_handlers.has_target(handler)
