@@ -70,26 +70,70 @@ def load_dotted_name(name):
         return getattr(mod,objnm)
 
 
-def pop_netstring(data):
-    """Pop a netstring from the front of the given data.
 
-    This function pops a netstring-formatted chunk of data from the front
-    of the given string.  It returns a two-tuple giving the contents of the
-    netstring and any remaining data.
+def pop_tnetstring(string):
+    """Pop a tnetstring from the front of the given data.
+
+    This function pops a tnetstring-formatted chunk of data from the front
+    of the given string.  It returns a two-tuple giving the value encoded
+    in the tnetstring and any remaining data.
     """
-    (size,body) = data.split(':', 1)
-    size = int(size)
-    if body[size] != ",":
-        raise ValueError("not a netstring: %r" % (data,))
-    return (body[:size],body[size+1:])
+    #  Parse out data length, type and remaining string.
+    try:
+        (dlen,rest) = string.split(":",1)
+        dlen = int(dlen)
+    except ValueError:
+        raise ValueError("not a tnetstring: missing or invalid length prefix")
+    try:
+        (data,type,remain) = (rest[:dlen],rest[dlen],rest[dlen+1:])
+    except IndexError:
+        #  This fires if len(rest) < dlen, meaning we don't need
+        #  to further validate that data is the right length.
+        raise ValueError("not a tnetstring: invalid length prefix")
+    #  Parse the data based on the type tag.
+    if type == ",":
+        return (data,remain)
+    if type == "#":
+        if "." in data or "e" in data or "E" in data:
+            try:
+                return (float(data),remain)
+            except ValueError:
+                raise ValueError("not a tnetstring: invalid float literal")
+        else:
+            try:
+                return (int(data),remain)
+            except ValueError:
+                raise ValueError("not a tnetstring: invalid integer literal")
+    if type == "!":
+        if data == "true":
+            return (True,remain)
+        elif data == "false":
+            return (False,remain)
+        else:
+            raise ValueError("not a tnetstring: invalid boolean literal")
+    if type == "~":
+        if data:
+            raise ValueError("not a tnetstring: invalid null literal")
+        return (None,remain)
+    if type == "]":
+        l = []
+        while data:
+            (item,data) = pop_tnetstring(data)
+            l.append(item)
+        return (l,remain)
+    if type == "}":
+        d = {}
+        while data:
+            (key,data) = pop_tnetstring(data)
+            (val,data) = pop_tnetstring(data)
+            d[key] = val
+        return (d,remain)
+    raise ValueError("unknown type tag")
 
-def encode_netstring(data):
-    """Encode the given data as a netstring."""
-    return "%d:%s," % (len(data),data,)
-
-def encode_netstrings(datas):
-    """Encode the given sequence of data strings as joined netstrings."""
-    return "".join(encode_netstring(d) for d in datas)
+try:
+    from tnetstring import pop as pop_tnetstring
+except ImportError:
+    pass
 
 
 _QUOTED_SLASH_RE = re.compile("(?i)%2F")
@@ -310,4 +354,19 @@ class CheckableQueue(object):
             self.__removed_count[item] = 1
 
 
+def force_ascii(value):
+    """Force a value to contain only ascii strings, not unicode.
+
+    This is mostly to bridge between Mongrel2's demand that everything be
+    ascii and the json module's habit of outputting unicode.
+    """
+    if isinstance(value,unicode):
+        return value.encode("ascii")
+    if isinstance(value,list):
+        return [force_ascii(v) for v in value]
+    if isinstance(value,dict):
+        items = value.iteritems()
+        return dict((force_ascii(k),force_ascii(v)) for (k,v) in items)
+    return value
+ 
 

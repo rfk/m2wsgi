@@ -41,7 +41,8 @@ from email.utils import formatdate as rfc822_format_date
 
 import zmq
 
-from m2wsgi.util import pop_netstring, unquote_path, unquote, InputStream
+from m2wsgi.util import pop_tnetstring, unquote_path, unquote
+from m2wsgi.util import InputStream, force_ascii
 
 
 class Client(object):
@@ -59,6 +60,18 @@ class Client(object):
 
     def __hash__(self):
         return hash((self.connection,self.server_id,self.client_id))
+
+    def __eq__(self,other):
+        if self.connection != other.connection:
+            return False
+        if self.server_id != other.server_id:
+            return False
+        if self.client_id != other.client_id:
+            return False
+        return True
+
+    def __ne__(self,other):
+        return not (self == other)
 
     def send(self,data):
         """Send some data to this client."""
@@ -83,6 +96,20 @@ class Request(object):
         self.headers = headers
         self.body = body
 
+    def __eq__(self,other):
+        if self.client != other.client:
+            return False
+        if self.path != other.path:
+            return False
+        if self.headers != other.headers:
+            return False
+        if self.body != other.body:
+            return False
+        return True
+
+    def __ne__(self,other):
+        return not (self == other)
+
     @classmethod
     def parse(cls,client,msg):
         """Parse a Request out of a (partial) Mongrel2 message.
@@ -92,14 +119,10 @@ class Request(object):
         constructs a Request from that.
         """
         (path,rest) = msg.split(" ",1)
-        (headers_str,rest) = pop_netstring(rest)
-        (body,_) = pop_netstring(rest)
-        headers = {}
-        #  Mongrel2 demands that everything be ASCII.
-        #  The json module makes all strings unicode.
-        #  *sigh*
-        for (k,v) in json.loads(headers_str).iteritems():
-            headers[k.encode("ascii")] = v.encode("ascii")
+        (headers,rest) = pop_tnetstring(rest)
+        (body,_) = pop_tnetstring(rest)
+        if isinstance(headers,basestring):
+            headers = force_ascii(json.loads(headers))
         return cls(client,path,headers,body)
 
     def respond(self,data):
