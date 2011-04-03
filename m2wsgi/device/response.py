@@ -14,7 +14,6 @@ information.   Use it like so::
               --status="Moved Permanently"\
               --header-Location="http://www.example.com%(PATH)s"
               --body="Redirecting to http://www.example.com\r\n"
-              --send-ident="836c41fd-0fbe-4c04-aa33-985d854e1069"
               tcp://127.0.0.1:9999
 
 
@@ -24,9 +23,6 @@ Some things to note:
 
     * the body and headers can contain python string-interpolation patterns,
       which will be filled in with values from the request headers.
-
-    * you can also specify any of the m2wsgi connection options, such as
-      --send-ident or --send-type.
 
 """
 #  Copyright (c) 2011, Ryan Kelly.

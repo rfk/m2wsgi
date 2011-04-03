@@ -422,7 +422,7 @@ class Connection(ConnectionBase):
         super(Connection,self).__init__()
 
     def _recv(self,timeout=None):
-        """Internal method of receving a message."""
+        """Internal method for receving a message."""
         ready = self._poll([self.send_sock],timeout=timeout)
         if self.send_sock in ready:
             return self.send_sock.recv(zmq.NOBLOCK)
@@ -530,7 +530,8 @@ class DispatcherConnection(ConnectionBase):
     def _send_xreq(self,msg,flags=0):
         """Send a message through the XREQ socket.
 
-        This method contains the logic for adding XREQ message delimiters.
+        This method contains the logic for adding XREQ message delimiters
+        to the message being sent.
         """
         self.disp_sock.send("",flags | zmq.SNDMORE)
         self.disp_sock.send(msg,flags)
@@ -774,24 +775,17 @@ class WSGIResponder(object):
         various output modes, e.g. whether to use chunked encoding or whether
         to close the connection when finished.
         """
-        self._write("HTTP/1.1 ")
-        self._write(self.status)
-        self._write("\r\n")
+        self._write("HTTP/1.1 %s \r\n" % (self.status,))
         has_content_length = False
         has_date = False
         for (k,v) in self.headers:
-            self._write(k)
-            self._write(": ")
-            self._write(v)
-            self._write("\r\n")
+            self._write("%s: %s\r\n" % (k,v,))
             if k.lower() == "content-length":
                 has_content_length = True
             elif k.lower() == "date":
                 has_date = True
         if not has_date:
-            self._write("Date: ")
-            self._write(rfc822_format_date())
-            self._write("\r\n")
+            self._write("Date: %s\r\n" % (rfc822_format_date(),))
         if not has_content_length:
             if self.request.headers["VERSION"] == "HTTP/1.1":
                 if self.request.headers["METHOD"] != "HEAD":

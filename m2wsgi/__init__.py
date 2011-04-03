@@ -36,25 +36,6 @@ you can use eventlet to shuffle the bits around like so::
 You can also use --io=gevent if that's how you roll.  Contributions for
 other async backends are most welcome.
 
-If you need to add fancy features to the server, you can specify additional
-WSGI middleware that should be applied around the application.  For example,
-m2wsgi provides a gzip-encoding middleware that can be used to compress
-response data::
-
-    m2wsgi --middleware=GZipMiddleware
-           dotted.app.name tcp://127.0.0.1:9999
-
-If you want additional compression at the expense of WSGI compliance, you
-can also do some in-server buffering before the gzipping is applied:
-
-    m2wsgi --middleware=GZipMiddleware
-           --middleware=BufferMiddleware
-           dotted.app.name tcp://127.0.0.1:9999
-
-The default module for loading middleware is m2wsgi.middleware; specify a
-full dotted name to load a middleware class from another module.
-
-
 
 Programmatic Usage
 ------------------
@@ -97,10 +78,30 @@ classes useful:
                   WSGI-specific in it.
 
 
+Middleware
+----------
+
+If you need to add fancy features to the server, you can specify additional
+WSGI middleware that should be applied around the application.  For example,
+m2wsgi provides a gzip-encoding middleware that can be used to compress
+response data::
+
+    m2wsgi --middleware=GZipMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+If you want additional compression at the expense of WSGI compliance, you
+can also do some in-server buffering before the gzipping is applied::
+
+    m2wsgi --middleware=GZipMiddleware
+           --middleware=BufferMiddleware
+           dotted.app.name tcp://127.0.0.1:9999
+
+The default module for loading middleware is m2wsgi.middleware; specify a
+full dotted name to load a middleware class from another module.
+
 
 Devices
 -------
-
 
 This module also provides a number of pre-built "devices" - stand-alone
 executables designed to perform a specific common task.  Currently availble
@@ -140,9 +141,10 @@ as you might find in e.g. the CherryPy server.  Instead, you just start up
 as many threads as you need, have them all connect to the same handler socket,
 and mongrel2 (via zmq) will automatically load-balance the requests to them.
 
-Similarly, there's no explicit support for reloading when the code changes.
-Just kill the old handler and start up a new one.  If you're using fixed
-handler UUIDs then zmq will ensure that the handover happens gracefully.
+Similarly, there's no fancy arrangement of master/worker processes to support
+clean reloading of the handler; you just kill the old handler process and start
+up a new one.  Send m2wsgi a SIGHUP and it will automatically shutdown and
+reincarnate itself for a clean restart.
 
 
 Current bugs, limitations and things to do
@@ -153,18 +155,11 @@ It's not all perfect just yet, although it does seem to mostly work:
     * Needs tests something fierce!  I just have to find the patience to
       write the necessary setup and teardown cruft.
 
-    * gevent IO module doesn't work with DispatcherConnection, it will
-      serve a few requests and then just freeze up.  No idea what's going
-      wrong.
-
     * It would be great to grab connection details straight from the
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
 
-    * When launched from the command-line, catch SIGHUP and/or SIGUSR1 and
-      re-execute  the handler.  This will allow easy auto-reload without
-      having to do any serious work.
-
+    * support for except-100-continue; this may have to live in mongrel2
 
 """
 #  Copyright (c) 2011, Ryan Kelly.
@@ -178,7 +173,9 @@ __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_su
 
 
 import sys
+import os
 import optparse
+from subprocess import MAXFD
 from textwrap import dedent
 try:
     import signal
@@ -237,10 +234,16 @@ def main(argv=None):
            app = mcls(app)
     #  Try to clean up properly when killed.
     #  We turn SIGTERM into a KeyboardInterrupt exception.
+    #  We catch SIGHUP and re-execute ourself as a simple reload mechanism.
+    reload_the_process = []
     if signal is not None:
-        def interrupt():
+        def on_sigterm(*args):
             raise KeyboardInterrupt
-        signal.signal(signal.SIGTERM,lambda *a: interrupt)
+        signal.signal(signal.SIGTERM,on_sigterm)
+        def on_sighup(*args):
+            reload_the_process.append(True)
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGHUP,on_sighup)
     #  Start the requested N handler threads.
     #  N-1 are started in background threads, then one on this thread.
     handlers = []
@@ -256,11 +259,19 @@ def main(argv=None):
         threads.append(t)
     try:
         run_handler()
+    except KeyboardInterrupt:
+        if not reload_the_process:
+            raise
     finally:
         #  When the handler exits, shut down any background threads.
         for h in handlers:
             h.stop()
         for t in threads:
             t.join()
+    #  If we're doing a clean restart, close all fds and exec ourself.
+    if reload_the_process:
+        Connection.ZMQ_CTX.term()
+        os.closerange(3,MAXFD)
+        os.execv(sys.argv[0],sys.argv)
 
 

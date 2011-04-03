@@ -34,7 +34,7 @@ except Exception:
 
 NAME = "m2wsgi"
 VERSION = info["__version__"]
-DESCRIPTION = "a mongrel2 => wsgi gateway"
+DESCRIPTION = "a mongrel2 => wsgi gateway and helper tools"
 LONG_DESC = info["__doc__"]
 AUTHOR = "Ryan Kelly"
 AUTHOR_EMAIL = "ryan@rfk.id.au"

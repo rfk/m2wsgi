@@ -41,6 +41,7 @@ class BufferMiddleware(object):
         output = self.application(environ,start_response)
         return BufferIter(output,self.min_chunk_size)
 
+
 class BufferIter(object):
     """Iterator wrapper buffering chunks yielded by another iterator."""
 
@@ -53,7 +54,12 @@ class BufferIter(object):
         return self
 
     def __len__(self):
-        return len(self.iterator)
+        #  We don't know how long the iterator is, with one exception.
+        #  If it's only a single item, then so are we.
+        nitems = len(self.iterator)
+        if nitems > 1:
+            raise TypeError
+        return nitems
 
     def next(self):
         min_size = self.min_chunk_size

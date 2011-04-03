@@ -5,7 +5,7 @@ m2wsgi.middleware.gzip:  GZip content-encoding middleware
 
 This is a GZip content-encoding WSGI middleware.  It strives hard for WSGI
 compliance, even at the expense of compression.  If you want to trade off
-compliance for better compression, but an instance of BufferMiddleware inside
+compliance for better compression, put an instance of BufferMiddleware inside
 it to collect small chunks and compress them all at once.
 
 """
@@ -25,13 +25,15 @@ class GZipMiddleware(object):
 
     Yeah yeah, don't do that, it's the province of the server.  Well, this
     is a server and an outer-layer middleware object seems like the simplest
-    way to achieve it.
+    way to implement gzip compression support.
 
     Unlike every other gzipping-middleware I have ever seen (except a diff
     that's languished in Django's bugzilla for 3 years) this one is capable
-    of compressing streaming responses.
+    of compressing streaming responses.  But beware, if your app yields lots
+    of small chunks this will probably *increase* the size of the payload
+    due to the overhead of the compression data.
 
-    Supports the following keyword arguments:
+    This class supports the following keyword arguments:
 
         :compress_level:      gzip compression level; default is 9
 
@@ -58,9 +60,9 @@ class GZipMiddleware(object):
             else:
                 gzf = gzip.GzipFile(mode="wb",fileobj=StringIO(),
                                     compresslevel=self.compress_level)
+                #  We must stream the chunks if there's no content-length
                 has_content_length = False
                 for (i,(k,v)) in enumerate(headers):
-                    #  We must stream the chunks if there's no content-length
                     if k.lower() == "content-length":
                         has_content_length = True
                     elif k.lower() == "vary":
@@ -81,8 +83,9 @@ class GZipMiddleware(object):
                     start_response(status,headers,exc_info)
                     handler.append(self._respond_compressed_stream)
                     handler.append(gzf)
-                #  The returned write() function will buffer all of its
-                #  data until an actual chunk is yielded from the app.
+                #  This is the stupid write() function required by the spec.
+                #  It will buffer all data written until a chunk is yielded
+                #  from the application.
                 return gzf.write
         output = self.application(environ,my_start_response)
         #  We have to read up to the first yielded chunk to give
@@ -103,7 +106,8 @@ class GZipMiddleware(object):
 
         This is pretty easy, but you have to mind the WSGI requirement to
         always yield each chunk in full whenever the application yields a
-        chunk.  Throw in some buffering middleware to work around this.
+        chunk.  Throw in some buffering middleware if you don't care about
+        this requirement, it'll make compression much better.
         """
         for chunk in output:
             if not chunk:
@@ -128,7 +132,7 @@ class GZipMiddleware(object):
         and stream the response, then let the server sort out how to terminate
         the connection.
         """
-        #  Hel.per function to remove any content-length headers and
+        #  Helper function to remove any content-length headers and
         #  then respond with streaming compression.
         def streamit():
             todel = []
@@ -209,6 +213,7 @@ def ipeek(iterable):
     """
     firstitem = iterable.next()
     return (firstitem,_PeekedIter(firstitem,iterable))
+
 
 class _PeekedIter(object):
     """Iterable that has had its first item peeked at."""
