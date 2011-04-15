@@ -990,6 +990,7 @@ class WSGIHandler(Handler):
         environ['wsgi.multithread'] = True
         environ['wsgi.multiprocess'] = False
         environ['wsgi.url_scheme'] = "http"
+        environ['wsgi.run_once'] = False
         #  Include the HTTP headers
         for (k,v) in req.headers.iteritems():
             #  The mongrel2 headers dict contains lots of things
