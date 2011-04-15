@@ -1,4 +1,10 @@
 
+v0.4.1
+
+    * Add support for tnetstrings as well as JSON.
+    * Add WSGI "run_once" variable; thanks logic.
+
+
 v0.4.0
 
     * A HUGE suite of API refactorings.
