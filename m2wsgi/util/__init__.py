@@ -130,6 +130,9 @@ def pop_tnetstring(string):
         return (d,remain)
     raise ValueError("unknown type tag")
 
+#
+#  Try to use c-accelerated tnetstrings if available.
+#
 try:
     from tnetstring import pop as pop_tnetstring
 except ImportError:

@@ -113,8 +113,6 @@ devices are:
     :response:    implements a simple canned response, with ability to
                   interpolate variables from the request.
 
-    :reaper:      a device for timing out hung or inactive requests.
-
 
 
 Don't we already have one of these?
@@ -159,7 +157,7 @@ It's not all perfect just yet, although it does seem to mostly work:
       mongrel2 config database.  Perhaps a Connection.from_config method
       with keywords to select the connection by handler id, host, route etc.
 
-    * support for except-100-continue; this may have to live in mongrel2
+    * support for expect-100-continue; this may have to live in mongrel2
 
 """
 #  Copyright (c) 2011, Ryan Kelly.
@@ -167,7 +165,7 @@ It's not all perfect just yet, although it does seem to mostly work:
 
 __ver_major__ = 0
 __ver_minor__ = 4
-__ver_patch__ = 1
+__ver_patch__ = 2
 __ver_sub__ = ""
 __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_sub__)
 

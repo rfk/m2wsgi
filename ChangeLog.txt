@@ -1,4 +1,9 @@
 
+v0.5.0
+
+    * Compatability update; m2wsgi now requires Mongrel2 v1.6 or later.
+        * Removed the "reaper" device; Mongrel2 v1.6 has its own timeouts
+
 v0.4.1
 
     * Add support for tnetstrings as well as JSON.
