@@ -951,7 +951,7 @@ class WSGIHandler(Handler):
             #  might e.g. move them somewhere.  We just read from them.
             try:
                 environ["wsgi.input"].close()
-            except KeyError:
+            except (KeyError, AttributeError):
                 pass
             upload_file = req.headers.get("x-mongrel2-upload-start",None)
             if upload_file:
