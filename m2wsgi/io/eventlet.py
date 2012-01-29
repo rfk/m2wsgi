@@ -28,68 +28,15 @@ import eventlet.hubs
 from eventlet.green import zmq, time
 from eventlet.timeout import Timeout
 from eventlet.event import Event
-from eventlet.hubs import use_hub
-eventlet.hubs.use_hub("zeromq")
 
 from greenlet import GreenletExit
 
 
 #  Older eventlet versions have buggy support for non-blocking zmq requests:
-#
 #     https://bitbucket.org/which_linden/eventlet/issue/76/
 #
 if map(int,eventlet.__version__.split(".")) <= [0,9,14]:
-    _BaseSocket = zmq.__zmq__.Socket
-    class _Socket(_BaseSocket):
-        def _send_message(self,msg,flags=0):
-            if flags & zmq.NOBLOCK:
-                super(_Socket,self)._send_message(msg,flags)
-                return
-            flags |= zmq.NOBLOCK
-            while True:
-                try:
-                    super(_Socket,self)._send_message(msg,flags)
-                    return
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        raise
-                zmq.trampoline(self,write=True)
-        def _send_copy(self,msg,flags=0):
-            if flags & zmq.NOBLOCK:
-                super(_Socket,self)._send_copy(msg,flags)
-                return
-            flags |= zmq.NOBLOCK
-            while True:
-                try:
-                    super(_Socket,self)._send_copy(msg,flags)
-                    return
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        raise
-                zmq.trampoline(self,write=True)
-        def _recv_message(self,flags=0,track=False):
-            if flags & zmq.NOBLOCK:
-                return super(_Socket,self)._recv_message(flags,track)
-            flags |= zmq.NOBLOCK
-            while True:
-                try:
-                    return super(_Socket,self)._recv_message(flags,track)
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        raise
-                zmq.trampoline(self,read=True)
-        def _recv_copy(self,flags=0):
-            if flags & zmq.NOBLOCK:
-                return super(_Socket,self)._recv_copy(flags)
-            flags |= zmq.NOBLOCK
-            while True:
-                try:
-                    return super(_Socket,self)._recv_copy(flags)
-                except zmq.ZMQError, e:
-                    if e.errno != zmq.EAGAIN:
-                        raise
-                zmq.trampoline(self,read=True)
-    zmq.Socket = _Socket
+    raise ImportError("requires eventlet >= 0.9.15")
 
 
 def monkey_patch():
@@ -154,8 +101,9 @@ class ConnectionBase(base.ConnectionBase):
         return ready
 
     def _do_poll(self,sock,ready,res,timeout):
+        fd = sock.getsockopt(zmq.FD)
         try:
-            zmq.trampoline(sock,read=True,timeout=timeout)
+            zmq.trampoline(fd,read=True,timeout=timeout)
         except Timeout:
             pass
         else:
