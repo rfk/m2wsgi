@@ -80,7 +80,9 @@ class _Context(zmq._Context):
         return super(_Context,self).term()
 
 class _Socket(zmq._Socket):
-    _polled_recv = None
+    def __init__(self,*args,**kwds):
+        self._polled_recv = None
+        super(_Socket,self).__init__(*args,**kwds)
     #  This blockingly-reads a message from the socket, but stores
     #  it in a buffer rather than returning it.
     def _recv_poll(self,flags=0,copy=True,track=False):
