@@ -982,6 +982,7 @@ class WSGIHandler(Handler):
         #  Let's just hope the client sends a Host header...
         environ["SERVER_NAME"] = "localhost"
         environ["SERVER_PORT"] = "80"
+        environ["REMOTE_ADDR"] = unquote(req.headers['x-forwarded-for'])
         #  Include standard wsgi keys
         environ['wsgi.input'] = self.get_input_file(req)
         # TODO: 100-continue support?

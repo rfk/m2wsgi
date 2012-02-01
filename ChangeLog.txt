@@ -1,3 +1,6 @@
+v0.5.2
+
+    * Include REMOTE_ADDR in the WSGI environ dict; thanks steamraven.
 
 v0.5.1
 
