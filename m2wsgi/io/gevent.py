@@ -20,7 +20,7 @@ You will need the gevent_zeromq package from here:
 #  All rights reserved; available under the terms of the MIT License.
 
 
-from __future__ import absolute_import 
+from __future__ import absolute_import
 from m2wsgi.util import fix_absolute_import
 fix_absolute_import(__file__)
 
@@ -36,6 +36,16 @@ import gevent_zeromq
 from gevent_zeromq import zmq
 
 import zmq.core.poll as zmq_poll
+
+if hasattr(zmq, '_Context'):
+    ZContext = zmq._Context
+else:
+    ZContext = zmq.Context
+
+if hasattr(zmq, '_Socket'):
+    ZSocket = zmq._Socket
+else:
+    ZSocket = zmq.Socket
 
 
 def monkey_patch():
@@ -68,7 +78,7 @@ def monkey_patch():
 #  Ideally I would juse use the _wait_read() method on gevent-zmq sockets,
 #  but this seems to cause hangs for me.  Still investigating.
 
-class _Context(zmq._Context):
+class _Context(ZContext):
     def socket(self,socket_type):
         if self.closed:
             raise zmq.ZMQError(zmq.ENOTSUP)
@@ -79,7 +89,7 @@ class _Context(zmq._Context):
         gevent.sleep(0.1)
         return super(_Context,self).term()
 
-class _Socket(zmq._Socket):
+class _Socket(ZSocket):
     def __init__(self,*args,**kwds):
         self._polled_recv = None
         super(_Socket,self).__init__(*args,**kwds)
@@ -241,5 +251,3 @@ class WSGIHandler(base.WSGIHandler,Handler):
     """
     ResponderClass = WSGIResponder
     StreamingUploadClass = StreamingUploadFile
-
-
