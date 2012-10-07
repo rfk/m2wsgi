@@ -165,7 +165,7 @@ It's not all perfect just yet, although it does seem to mostly work:
 
 __ver_major__ = 0
 __ver_minor__ = 5
-__ver_patch__ = 1
+__ver_patch__ = 2
 __ver_sub__ = ""
 __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,__ver_patch__,__ver_sub__)
 
@@ -271,5 +271,3 @@ def main(argv=None):
         Connection.ZMQ_CTX.term()
         os.closerange(3,MAXFD)
         os.execv(sys.argv[0],sys.argv)
-
-
