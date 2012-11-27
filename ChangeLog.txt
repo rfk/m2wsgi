@@ -1,6 +1,7 @@
 v0.5.2
 
     * Include REMOTE_ADDR in the WSGI environ dict; thanks steamraven.
+    * Add support for gevent 1.0b; thanks aadis.
 
 v0.5.1
 
